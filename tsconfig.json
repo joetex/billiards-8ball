@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "lib": ["ES2020", "DOM", "DOM.Iterable"],
+        "strict": true,
+        "noEmit": true,
+        "isolatedModules": true,
+        "allowImportingTsExtensions": true,
+        "resolveJsonModule": true,
+        "skipLibCheck": true,
+        "useDefineForClassFields": true,
+        "baseUrl": ".",
+        "paths": {
+            "@acosgames/framework": ["../acosgames/framework/src/index.ts"]
+        }
+    },
+    "include": ["game-client/**/*.ts"],
+    "exclude": ["node_modules", "builds"]
+}

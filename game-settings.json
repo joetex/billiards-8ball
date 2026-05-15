@@ -1,0 +1,70 @@
+{
+    "minplayers": 2,
+    "maxplayers": 2,
+    "minteams": 0,
+    "maxteams": 0,
+    "teams": [],
+    "screentype": 3,
+    "resow": 16,
+    "resoh": 9,
+    "screenwidth": 1000,
+    "stats": {
+        "FP": {
+            "stat_name": "First Pick",
+            "stat_desc": "First pick square",
+            "stat_abbreviation": "FP",
+            "valueTYPE": 4,
+            "scoreboard": false,
+            "stat_order": 2
+        },
+        "WP": {
+            "stat_name": "Winning Pick",
+            "stat_desc": "Winning pick square",
+            "stat_abbreviation": "WP",
+            "valueTYPE": 4,
+            "stat_order": 0,
+            "abbr": "WP",
+            "scoreboard": true
+        },
+        "P": {
+            "stat_name": "Picked",
+            "stat_desc": "How many picks you've made",
+            "stat_abbreviation": "P",
+            "scoreboard": true,
+            "valueTYPE": 0,
+            "stat_order": 1
+        },
+        "F": {
+            "stat_name": "Float test",
+            "stat_desc": "float test",
+            "stat_abbreviation": "F",
+            "valueTYPE": 1,
+            "stat_order": 3
+        },
+        "A": {
+            "stat_name": "Avg test",
+            "stat_desc": "avg test",
+            "stat_abbreviation": "A",
+            "valueTYPE": 2,
+            "stat_order": 4
+        },
+        "T": {
+            "stat_name": "Time test",
+            "stat_desc": "time test",
+            "stat_abbreviation": "T",
+            "valueTYPE": 3,
+            "stat_order": 5
+        }
+    },
+    "items": [
+        {
+            "item_name": "O Ring",
+            "item_desc": "One ring to rule them all",
+            "item_slug": "o_ring",
+            "max_uses": 0,
+            "expire_days": 0,
+            "item_order": 0,
+            "item_category": "aaaa"
+        }
+    ]
+}

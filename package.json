@@ -1,0 +1,33 @@
+{
+    "name": "8ball-billiards",
+    "version": "0.1.0",
+    "type": "module",
+    "sideEffects": [
+        "*.css"
+    ],
+    "scripts": {
+        "start": "concurrently \"npm run client\" \"npm run server\" \"npx acos dev --type=generic\"",
+        "start:watch": "concurrently \"npm run client:watch\" \"npm run server\" \"npx acos dev --type=generic-watch\"",
+        "build": "npm run client:build && npm run server:build",
+        "deploy": "npm run build && npx acos deploy",
+        "client": "vite serve",
+        "client:watch": "vite build --watch",
+        "client:build": "vite build",
+        "server": "npx rollup -c -w",
+        "server:build": "npx rollup -c --environment NODE_ENV:production",
+        "kill:win": "taskkill //im node.exe //F"
+    },
+    "dependencies": {
+        "@acosgames/framework": "file:../acosgames/framework",
+        "@acosgames/simulator": "file:../acosgames/simulator",
+        "phaser": "^3.87.0"
+    },
+    "devDependencies": {
+        "@rollup/plugin-json": "^6.1.0",
+        "@rollup/plugin-node-resolve": "^15.2.3",
+        "@rollup/plugin-terser": "^1.0.0",
+        "concurrently": "^9.2.1",
+        "rollup": "^4.60.1",
+        "vite": "^8.0.8"
+    }
+}

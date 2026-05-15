@@ -1,0 +1,34 @@
+{
+    "state": {
+        "cells": {
+            "$static": {"$enum": ["", "X", "O"]}
+        }
+    },
+    "players": {
+        "attr": {
+            "test": "uint"
+        }
+    },
+    "teams": {
+        "attr": {
+            "test2": "uint"
+        }
+    },
+    "room": {
+        "next_action": {
+            "$enum": [
+                "pick"
+            ]
+        },
+        "events": {
+            "$array": {
+                "type": {
+                    "$enum": [
+                        "pick"
+                    ]
+                },
+                "payload": "any"
+            }
+        }
+    }
+}

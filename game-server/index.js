@@ -1,6 +1,6 @@
 import { ACOSServer } from "@acosgames/framework";
 
-import { onJoin, onLeave, onGameStart as onGameStart, onPick, onSkip, onNewGame, onAim, onShoot } from "./game";
+import { onJoin, onLeave, onGameStart as onGameStart, onPick, onSkip, onNewGame, onAim, onShoot, onCueMove, onCuePlace } from "./game";
 
 //prepare gameState for mutation
 ACOSServer.init();
@@ -16,6 +16,8 @@ ACOSServer.on("skip", onSkip);
 ACOSServer.on("pick", onPick);
 ACOSServer.on("aim", onAim);
 ACOSServer.on("shoot", onShoot);
+ACOSServer.on("cue-move", onCueMove);
+ACOSServer.on("cue-place", onCuePlace);
 
 //Save changes
 ACOSServer.commit();

@@ -1,4 +1,5 @@
 import { ACOSServer } from "@acosgames/framework";
+import { physics as p } from "propel-js";
 
 function game() {
     return ACOSServer.game();
@@ -71,17 +72,6 @@ function oppositeGroup(group) {
 function randomInt(maxExclusive) {
     const r = typeof ACOSServer.random === "function" ? ACOSServer.random() : Math.random();
     return Math.floor(r * maxExclusive);
-}
-
-function restitutionFromSpeed(speed) {
-    const span = PHYSICS.restitutionSpeedHigh - PHYSICS.restitutionSpeedLow;
-    const safeSpan = span <= 0 ? 1 : span;
-    const t = clamp((speed - PHYSICS.restitutionSpeedLow) / safeSpan, 0, 1);
-    return PHYSICS.minRestitution + t * (PHYSICS.maxRestitution - PHYSICS.minRestitution);
-}
-
-function ballSpeed(ball) {
-    return Math.hypot(ball.vx, ball.vy);
 }
 
 function createInitialBalls() {
@@ -169,6 +159,8 @@ function ensureState(gs) {
     if (typeof gs.state("winnerId") !== "number") gs.state("winnerId", -1);
     if (typeof gs.state("shotInProgress") !== "boolean") gs.state("shotInProgress", false);
     if (!gs.state("lastShot") || typeof gs.state("lastShot") !== "object") gs.state("lastShot", {});
+    if (typeof gs.state("cueBallInHand") !== "boolean") gs.state("cueBallInHand", false);
+    if (!gs.state("cueBallPlacement") || typeof gs.state("cueBallPlacement") !== "object") gs.state("cueBallPlacement", {});
 }
 
 function getActivePlayers(gs) {
@@ -197,94 +189,90 @@ function isInsidePocket(ball) {
     return false;
 }
 
-function resolveBallCushionCollision(ball) {
-    if (!ball.visible) return;
-
+function isCueBallInsideTable(x, y) {
     const radius = BALL.radius;
-    let collided = false;
-
-    if (ball.y - radius <= TABLE.cushionWidth) {
-        ball.y = TABLE.cushionWidth + radius;
-        ball.vy = -ball.vy;
-        collided = true;
-    }
-    if (ball.x - radius <= TABLE.cushionWidth) {
-        ball.x = TABLE.cushionWidth + radius;
-        ball.vx = -ball.vx;
-        collided = true;
-    }
-    if (ball.x + radius >= TABLE.width - TABLE.cushionWidth) {
-        ball.x = TABLE.width - TABLE.cushionWidth - radius;
-        ball.vx = -ball.vx;
-        collided = true;
-    }
-    if (ball.y + radius >= TABLE.height - TABLE.cushionWidth) {
-        ball.y = TABLE.height - TABLE.cushionWidth - radius;
-        ball.vy = -ball.vy;
-        collided = true;
-    }
-
-    if (collided) {
-        const restitution = restitutionFromSpeed(ballSpeed(ball));
-        ball.vx *= restitution;
-        ball.vy *= restitution;
-    }
+    if (x - radius <= TABLE.cushionWidth) return false;
+    if (y - radius <= TABLE.cushionWidth) return false;
+    if (x + radius >= TABLE.width - TABLE.cushionWidth) return false;
+    if (y + radius >= TABLE.height - TABLE.cushionWidth) return false;
+    return !isInsidePocket({ x, y });
 }
 
-function resolveBallBallCollision(first, second, result) {
-    if (!first.visible || !second.visible) {
+function isValidCueBallPlacement(balls, x, y) {
+    if (!isCueBallInsideTable(x, y)) {
         return false;
     }
 
-    const dx = second.x - first.x;
-    const dy = second.y - first.y;
-    const dist = Math.hypot(dx, dy);
-
-    if (dist >= BALL.diameter || dist === 0) {
-        return false;
-    }
-
-    const nx = dx / dist;
-    const ny = dy / dist;
-    const penetration = BALL.diameter - dist;
-    const sepX = nx * (penetration / 2);
-    const sepY = ny * (penetration / 2);
-
-    first.x -= sepX;
-    first.y -= sepY;
-    second.x += sepX;
-    second.y += sepY;
-
-    const rvx = second.vx - first.vx;
-    const rvy = second.vy - first.vy;
-    const velocityAlongNormal = rvx * nx + rvy * ny;
-
-    if (velocityAlongNormal >= 0) {
-        return true;
-    }
-
-    const impactSpeed = Math.abs(velocityAlongNormal);
-    const restitution = restitutionFromSpeed(impactSpeed);
-    const impulse = -((1 + restitution) * velocityAlongNormal) / 2;
-    const ix = nx * impulse;
-    const iy = ny * impulse;
-
-    first.vx -= ix;
-    first.vy -= iy;
-    second.vx += ix;
-    second.vy += iy;
-
-    if (!result.firstHitType) {
-        if (first.type === "cue" && second.type !== "cue") {
-            result.firstHitType = second.type;
-            result.firstHitNumber = second.number;
-        } else if (second.type === "cue" && first.type !== "cue") {
-            result.firstHitType = first.type;
-            result.firstHitNumber = first.number;
+    for (let i = 0; i < balls.length; i++) {
+        const ball = balls[i];
+        if (!ball.visible || ball.type === "cue") {
+            continue;
+        }
+        if (Math.hypot(ball.x - x, ball.y - y) <= BALL.diameter) {
+            return false;
         }
     }
 
     return true;
+}
+
+function setCueBallPosition(gs, x, y) {
+    const balls = Array.isArray(gs.state("balls")) ? cloneBalls(gs.state("balls")) : createInitialBalls();
+    const cueBall = balls.find((b) => b.type === "cue");
+    if (!cueBall) {
+        return;
+    }
+
+    cueBall.visible = true;
+    cueBall.x = x;
+    cueBall.y = y;
+    cueBall.vx = 0;
+    cueBall.vy = 0;
+    gs.state("balls", balls);
+}
+
+// Propel-js simulation constants
+const SIM_BALL_RESTITUTION = 0.9;
+const SIM_WALL_RESTITUTION = 0.75;
+const SIM_WALL_THICKNESS = 200;
+
+function buildSimWorld(balls) {
+    const world = p.createWorld({ x: 0, y: 0 }, 9999);
+    const wt = SIM_WALL_THICKNESS;
+    const hw = TABLE.width / 2;
+    const hh = TABLE.height / 2;
+    const cw = TABLE.cushionWidth;
+
+    // Static wall rectangles — inner face aligned with cushion edge
+    const topWall = p.createRectangle(world, { x: hw, y: cw - wt / 2 }, TABLE.width + wt * 2, wt, 0, 0, SIM_WALL_RESTITUTION);
+    p.addBody(world, topWall);
+    const bottomWall = p.createRectangle(world, { x: hw, y: TABLE.height - cw + wt / 2 }, TABLE.width + wt * 2, wt, 0, 0, SIM_WALL_RESTITUTION);
+    p.addBody(world, bottomWall);
+    const leftWall = p.createRectangle(world, { x: cw - wt / 2, y: hh }, wt, TABLE.height + wt * 2, 0, 0, SIM_WALL_RESTITUTION);
+    p.addBody(world, leftWall);
+    const rightWall = p.createRectangle(world, { x: TABLE.width - cw + wt / 2, y: hh }, wt, TABLE.height + wt * 2, 0, 0, SIM_WALL_RESTITUTION);
+    p.addBody(world, rightWall);
+
+    const bodyMap = [];
+    const bodyIdToIndex = {};
+
+    for (let i = 0; i < balls.length; i++) {
+        const ball = balls[i];
+        if (!ball.visible) {
+            bodyMap.push(null);
+            continue;
+        }
+        const body = p.createCircle(world, { x: ball.x, y: ball.y }, BALL.radius, 1, 0, SIM_BALL_RESTITUTION);
+        p.addBody(world, body);
+        body.floating = true;
+        body.fixedRotation = true;
+        body.velocity = { x: ball.vx, y: ball.vy };
+        body.velMag = Math.hypot(ball.vx, ball.vy);
+        bodyMap.push(body);
+        bodyIdToIndex[body.id] = i;
+    }
+
+    return { world, bodyMap, bodyIdToIndex };
 }
 
 function simulateShot(initialBalls, angle, power) {
@@ -298,84 +286,104 @@ function simulateShot(initialBalls, angle, power) {
         eightPocketed: false,
     };
 
-    const cueBall = balls.find((b) => b.type === "cue");
-    if (!cueBall) {
-        return { balls, ...result };
-    }
+    const cueBallIndex = balls.findIndex((b) => b.type === "cue");
+    if (cueBallIndex < 0) return { balls, ...result };
 
+    const cueBall = balls[cueBallIndex];
     if (!cueBall.visible) {
         cueBall.visible = true;
         cueBall.x = CUE_BALL_POSITION.x;
         cueBall.y = CUE_BALL_POSITION.y;
     }
-
     cueBall.vx = power * Math.cos(angle);
     cueBall.vy = power * Math.sin(angle);
 
-    let settled = false;
+    const { world, bodyMap, bodyIdToIndex } = buildSimWorld(balls);
+
+    const frictionFactor = 1 - PHYSICS.friction;
+    const minVel = BALL.minVelocityLength;
+    const pocketed = new Set();
+    const pocketedPos = new Map();
+
     for (let step = 0; step < PHYSICS.maxSimSteps; step++) {
-        for (let i = 0; i < balls.length; i++) {
-            const ball = balls[i];
-            if (!ball.visible) continue;
+        const collisions = p.worldStep(1, world);
 
-            ball.vx *= (1 - PHYSICS.friction);
-            ball.vy *= (1 - PHYSICS.friction);
-            ball.x += ball.vx;
-            ball.y += ball.vy;
-
-            if (ballSpeed(ball) < BALL.minVelocityLength) {
-                ball.vx = 0;
-                ball.vy = 0;
+        // Track the first ball type the cue ball hits
+        if (!result.firstHitType) {
+            for (const col of collisions) {
+                const aIdx = bodyIdToIndex[col.bodyAId];
+                const bIdx = bodyIdToIndex[col.bodyBId];
+                if (aIdx === undefined || bIdx === undefined) continue;
+                if (aIdx === cueBallIndex || bIdx === cueBallIndex) {
+                    const otherIdx = aIdx === cueBallIndex ? bIdx : aIdx;
+                    result.firstHitType = balls[otherIdx].type;
+                    result.firstHitNumber = balls[otherIdx].number;
+                    break;
+                }
             }
         }
 
-        for (let i = 0; i < balls.length; i++) {
-            resolveBallCushionCollision(balls[i]);
-        }
-
-        for (let i = 0; i < balls.length; i++) {
-            for (let j = i + 1; j < balls.length; j++) {
-                resolveBallBallCollision(balls[i], balls[j], result);
+        // Apply rolling friction and clamp near-zero velocities
+        for (let i = 0; i < bodyMap.length; i++) {
+            const body = bodyMap[i];
+            if (!body || pocketed.has(i)) continue;
+            body.velocity.x *= frictionFactor;
+            body.velocity.y *= frictionFactor;
+            const spd = Math.hypot(body.velocity.x, body.velocity.y);
+            if (spd < minVel) {
+                body.velocity.x = 0;
+                body.velocity.y = 0;
+                body.velMag = 0;
+            } else {
+                body.velMag = spd;
             }
         }
 
-        for (let i = 0; i < balls.length; i++) {
-            const ball = balls[i];
-            if (!ball.visible) continue;
-
-            if (isInsidePocket(ball)) {
-                ball.visible = false;
-                ball.vx = 0;
-                ball.vy = 0;
-
+        // Pocket detection
+        for (let i = 0; i < bodyMap.length; i++) {
+            if (pocketed.has(i)) continue;
+            const body = bodyMap[i];
+            if (!body) continue;
+            if (isInsidePocket({ x: body.center.x, y: body.center.y })) {
+                pocketedPos.set(i, { x: body.center.x, y: body.center.y });
+                pocketed.add(i);
+                p.disableBody(world, body);
+                const ball = balls[i];
                 if (!result.pocketedMap[ball.number]) {
                     result.pocketedMap[ball.number] = true;
                     result.pocketed.push({ number: ball.number, type: ball.type });
                 }
-
                 if (ball.type === "cue") result.cuePocketed = true;
                 if (ball.type === "eight") result.eightPocketed = true;
             }
         }
 
-        settled = true;
-        for (let i = 0; i < balls.length; i++) {
-            const ball = balls[i];
-            if (!ball.visible) continue;
-            if (ballSpeed(ball) >= BALL.minVelocityLength) {
+        // Stop once all visible balls have settled
+        let settled = true;
+        for (let i = 0; i < bodyMap.length; i++) {
+            if (pocketed.has(i) || !bodyMap[i]) continue;
+            if (Math.hypot(bodyMap[i].velocity.x, bodyMap[i].velocity.y) >= minVel) {
                 settled = false;
                 break;
             }
         }
-
         if (settled) break;
     }
 
-    for (let i = 0; i < balls.length; i++) {
+    // Write final positions back to ball objects
+    for (let i = 0; i < bodyMap.length; i++) {
         const ball = balls[i];
-        if (ballSpeed(ball) < BALL.minVelocityLength) {
+        if (pocketed.has(i)) {
+            ball.visible = false;
             ball.vx = 0;
             ball.vy = 0;
+            const pos = pocketedPos.get(i);
+            if (pos) { ball.x = pos.x; ball.y = pos.y; }
+        } else if (bodyMap[i]) {
+            ball.x = bodyMap[i].center.x;
+            ball.y = bodyMap[i].center.y;
+            ball.vx = bodyMap[i].velocity.x;
+            ball.vy = bodyMap[i].velocity.y;
         }
     }
 
@@ -475,6 +483,7 @@ function applyShotResult(gs, shooterId, angle, power, result) {
     gs.state("foul", foul);
     gs.state("winnerId", winnerId);
     gs.state("shotInProgress", false);
+    gs.state("cueBallInHand", foul);
     gs.state("lastShot", {
         by: shooter.id,
         angle,
@@ -486,6 +495,28 @@ function applyShotResult(gs, shooterId, angle, power, result) {
         winnerId,
     });
     gs.state("shotSerial", (state.shotSerial || 0) + 1);
+
+    if (foul) {
+        const balls = Array.isArray(gs.state("balls")) ? cloneBalls(gs.state("balls")) : createInitialBalls();
+        const cueBall = balls.find((b) => b.type === "cue");
+        if (cueBall) {
+            cueBall.visible = true;
+            cueBall.x = CUE_BALL_POSITION.x;
+            cueBall.y = CUE_BALL_POSITION.y;
+            cueBall.vx = 0;
+            cueBall.vy = 0;
+            gs.state("balls", balls);
+            gs.state("cueBallPlacement", {
+                x: cueBall.x,
+                y: cueBall.y,
+                by: shooter.id,
+                placed: false,
+                updatedAt: Date.now(),
+            });
+        }
+    } else {
+        gs.state("cueBallPlacement", {});
+    }
 
     if (winnerId >= 0) {
         ACOSServer.gameover({ type: "winner", payload: winnerId });
@@ -514,6 +545,8 @@ export function onNewGame(_action) {
     gs.state("winnerId", -1);
     gs.state("shotInProgress", false);
     gs.state("lastShot", {});
+    gs.state("cueBallInHand", false);
+    gs.state("cueBallPlacement", {});
 
     const players = getActivePlayers(gs);
     for (let i = 0; i < players.length; i++) {
@@ -540,6 +573,8 @@ export function onGameStart(_action) {
     if (typeof gs.state("winnerId") !== "number") gs.state("winnerId", -1);
     if (typeof gs.state("shotInProgress") !== "boolean") gs.state("shotInProgress", false);
     if (!gs.state("lastShot") || typeof gs.state("lastShot") !== "object") gs.state("lastShot", {});
+    if (typeof gs.state("cueBallInHand") !== "boolean") gs.state("cueBallInHand", false);
+    if (!gs.state("cueBallPlacement") || typeof gs.state("cueBallPlacement") !== "object") gs.state("cueBallPlacement", {});
 
     const players = getActivePlayers(gs);
     for (let i = 0; i < players.length; i++) {
@@ -649,6 +684,11 @@ export function onShoot(action) {
         return;
     }
 
+    if (gs.state("cueBallInHand") === true) {
+        ACOSServer.ignore();
+        return;
+    }
+
     const payload = action?.payload || {};
     const angle = Number(payload?.angle);
     const power = clamp(Number(payload?.power), 0, BALL.maxPower);
@@ -664,6 +704,8 @@ export function onShoot(action) {
 
     ensurePlayerFields(shooter);
     gs.state("shotInProgress", true);
+    gs.state("cueBallInHand", false);
+    gs.state("cueBallPlacement", {});
 
     const currentBalls = Array.isArray(gs.state("balls")) ? gs.state("balls") : createInitialBalls();
     const result = simulateShot(currentBalls, angle, power);
@@ -673,4 +715,76 @@ export function onShoot(action) {
 // Backward compatibility with old action name.
 export function onPick(action) {
     onShoot(action);
+}
+
+export function onCueMove(action) {
+    const gs = game();
+    ensureState(gs);
+
+    const playerId = action?.user?.id;
+    if (typeof playerId !== "number") {
+        return;
+    }
+
+    if (gs.nextPlayer !== playerId || gs.state("cueBallInHand") !== true) {
+        ACOSServer.ignore();
+        return;
+    }
+
+    const payload = action?.payload || {};
+    const x = Number(payload?.x);
+    const y = Number(payload?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+    }
+
+    if (!isCueBallInsideTable(x, y)) {
+        return;
+    }
+
+    setCueBallPosition(gs, x, y);
+    gs.state("cueBallPlacement", {
+        x,
+        y,
+        by: playerId,
+        placed: false,
+        updatedAt: Date.now(),
+    });
+}
+
+export function onCuePlace(action) {
+    const gs = game();
+    ensureState(gs);
+
+    const playerId = action?.user?.id;
+    if (typeof playerId !== "number") {
+        return;
+    }
+
+    if (gs.nextPlayer !== playerId || gs.state("cueBallInHand") !== true) {
+        ACOSServer.ignore();
+        return;
+    }
+
+    const payload = action?.payload || {};
+    const x = Number(payload?.x);
+    const y = Number(payload?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+    }
+
+    const balls = Array.isArray(gs.state("balls")) ? gs.state("balls") : createInitialBalls();
+    if (!isValidCueBallPlacement(balls, x, y)) {
+        return;
+    }
+
+    setCueBallPosition(gs, x, y);
+    gs.state("cueBallInHand", false);
+    gs.state("cueBallPlacement", {
+        x,
+        y,
+        by: playerId,
+        placed: true,
+        updatedAt: Date.now(),
+    });
 }

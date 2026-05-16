@@ -20,6 +20,7 @@ export class Stick {
 
     private _sprite: HTMLImageElement = Assets.getSprite(sprites.paths.stick);
     private _rotation: number = 0;
+    private _lastStickRotation: number = 0;
     private _origin: Vector2 = Vector2.copy(stickConfig.origin);
     private _power: number = 0;
     private _movable: boolean = true;
@@ -58,7 +59,12 @@ export class Stick {
         this._visible = value;
     }
 
+    public get lastStickRotation(): number {
+        return this._lastStickRotation;
+    }
+    
     public set rotation(value: number) {
+        this._lastStickRotation = this._rotation;
         this._rotation = value;
     }
 
@@ -132,7 +138,7 @@ export class Stick {
     private drawPowerMeter(): void {
         if (!this._aimLocked) return;
 
-        const meterPos = new Vector2(36, 770);
+        const meterPos = new Vector2(36, GameConfig.gameSize.y - 42);
         const meterSize = new Vector2(220, 18);
         const fillSize = new Vector2(meterSize.x * (this._power / stickConfig.maxPower), meterSize.y);
 

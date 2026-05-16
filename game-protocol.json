@@ -1,31 +1,56 @@
 {
     "state": {
-        "cells": {
-            "$static": {"$enum": ["", "X", "O"]}
+        "balls": {
+            "$array": {
+                "id": "uint",
+                "number": "uint",
+                "type": {
+                    "$enum": ["solid", "stripe", "eight", "cue"]
+                },
+                "x": "any",
+                "y": "any",
+                "vx": "any",
+                "vy": "any",
+                "visible": "any"
+            }
+        },
+        "shotSerial": "uint",
+        "foul": "any",
+        "winnerId": "int",
+        "shotInProgress": "any",
+        "cueBallInHand": "any",
+        "cueAngle": "uint",
+        "cuePower": "uint",
+        "shotBy": "int",
+        "shotAngle": "uint",
+        "shotPower": "uint",
+        "cueBallPlacement": {
+            "x": "any",
+            "y": "any",
+            "by": "any",
+            "placed": "any",
+            "updatedAt": "any"
         }
     },
     "players": {
         "attr": {
-            "test": "uint"
-        }
-    },
-    "teams": {
-        "attr": {
-            "test2": "uint"
+            "collectedBalls": {
+                "$array": "uint"
+            },
+            "group": {
+                "$enum": ["solid", "stripe", null]
+            }
         }
     },
     "room": {
         "next_action": {
-            "$enum": [
-                "pick"
-            ]
+            "$enum": ["shoot", "pick"]
         },
+        "next_player": "int",
         "events": {
             "$array": {
                 "type": {
-                    "$enum": [
-                        "pick"
-                    ]
+                    "$enum": ["newround"]
                 },
                 "payload": "any"
             }

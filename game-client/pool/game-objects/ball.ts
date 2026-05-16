@@ -33,20 +33,28 @@ export class Ball {
     private _spinVelocity = { x: 0, y: 0, z: 0 };
     private _surfaceOffset: Vector2 = Vector2.zero;
     private _previousVelocity: Vector2 = Vector2.zero;
-    private static readonly _precisionFactor: number = 1_000_000;
+    private static readonly _precisionFactor: number = 100_000_000;
+    private static readonly _spinBoost: number = 1.35;
+    private _ballNumber: number = 0;
 
+    private _lastPosition: Vector2 = Vector2.zero;
 
     //------Properties------//
 
+    public get lastPosition(): Vector2 {
+        return Vector2.copy(this._lastPosition);
+    }
     public get position(): Vector2 {
         return Vector2.copy(this._position);
     }
 
     public set position(value: Vector2) {
+        this._lastPosition = Vector2.copy(this._position);
         this._position = Ball.quantizeVector(value);
     }
 
     public get nextPosition(): Vector2 {
+        this._lastPosition = Vector2.copy(this._position);
         return this.position.add(this._velocity.mult(1 - physicsConfig.friction));
     }
 
@@ -72,10 +80,15 @@ export class Ball {
         return this._visible;
     }
 
+    public get ballNumber(): number {
+        return this._ballNumber;
+    }
+
     //------Constructor------//
 
-    constructor(private _position: Vector2, color: Color, textureUrl?: string) {
+    constructor(private _position: Vector2, color: Color, textureUrl?: string, ballNumber?: number) {
         this._color = color;
+        this._ballNumber = ballNumber ?? 0;
         this._sphereTexture = this.resolveSphereTexture(color, textureUrl);
         if (!Ball._shadowTexture) {
             Ball._shadowTexture = Ball.getCachedTexture(sphereShadowUrl);
@@ -140,42 +153,32 @@ export class Ball {
     private updateSpin(): void {
         const radius = ballConfig.diameter / 2;
         const safeRadius = Math.max(radius, 1);
-        const speed = this._velocity.length;
 
-        // Rolling on a table: omega = n x v / r (n points out of table)
-        const targetOmegaX = -this._velocity.y / safeRadius;
-        const targetOmegaY = this._velocity.x / safeRadius;
-
-        const prevSpeed = this._previousVelocity.length;
-        let targetOmegaZ = 0;
-        if (speed > 0.0001 && prevSpeed > 0.0001) {
-            const signedTurn = (this._previousVelocity.x * this._velocity.y - this._previousVelocity.y * this._velocity.x) / (prevSpeed * speed);
-            targetOmegaZ = signedTurn * (speed / safeRadius) * 0.65;
-        }
-
-        const followVelocity = 0.2;
-        const followTurn = 0.16;
-        this._spinVelocity.x = this._spinVelocity.x * (1 - followVelocity) + targetOmegaX * followVelocity;
-        this._spinVelocity.y = this._spinVelocity.y * (1 - followVelocity) + targetOmegaY * followVelocity;
-        this._spinVelocity.z = this._spinVelocity.z * (1 - followTurn) + targetOmegaZ * followTurn;
-
-        const angularDamping = 1 - Math.min(0.35, physicsConfig.friction * 8);
-        this._spinVelocity.x *= angularDamping;
-        this._spinVelocity.y *= angularDamping;
-        this._spinVelocity.z *= angularDamping;
-
-        const textureDriftScale = radius * 0.48;
-        // Visual mapping from angular axes to UV drift. The minus sign keeps rolling direction intuitive.
-        const offsetDelta = new Vector2(-this._spinVelocity.y * textureDriftScale, this._spinVelocity.x * textureDriftScale);
-        this._surfaceOffset.addTo(offsetDelta);
-
+        // --- UV surface scroll (rolling without slip) ---
+        // One full revolution travels 2πr = πD. One tile = D. Ratio = 1/π.
+        this._surfaceOffset.addTo(new Vector2(
+            (-this._velocity.x / Math.PI) * Ball._spinBoost,
+            (-this._velocity.y / Math.PI) * Ball._spinBoost,
+        ));
         const period = radius * 2;
         this._surfaceOffset = new Vector2(
             Ball.wrapOffset(this._surfaceOffset.x, period),
             Ball.wrapOffset(this._surfaceOffset.y, period),
         );
 
-        this._spinRoll = Ball.quantize(this._spinRoll + this._spinVelocity.z * 0.26);
+        // Capture angular velocity so idle-coasting phase can continue scrolling
+        this._spinVelocity.x = -this._velocity.y / safeRadius;
+        this._spinVelocity.y = this._velocity.x / safeRadius;
+
+        // --- Z spin (in-plane rotation from deflections) ---
+        const prevSpeed = this._previousVelocity.length;
+        const speed = this._velocity.length;
+        if (speed > 0.0001 && prevSpeed > 0.0001) {
+            const signedTurn = (this._previousVelocity.x * this._velocity.y - this._previousVelocity.y * this._velocity.x) / (prevSpeed * speed);
+            this._spinVelocity.z = this._spinVelocity.z * 0.84 + signedTurn * (speed / safeRadius) * 0.65 * 0.16 * Ball._spinBoost;
+        }
+
+        this._spinRoll = Ball.quantize(this._spinRoll + this._spinVelocity.z * 0.26 * Ball._spinBoost);
         this._previousVelocity = Vector2.copy(this._velocity);
     }
 
@@ -206,6 +209,13 @@ export class Ball {
         this._previousVelocity = Vector2.zero;
     }
 
+    /** Called externally (e.g. during shot playback) to advance spin without moving the ball. */
+    public tickSpin(): void {
+        if (this._velocity.length >= ballConfig.minVelocityLength) {
+            this.updateSpin();
+        }
+    }
+
     public update(): void {
         if(this._moving) {
             this._velocity = Ball.quantizeVector(this._velocity.mult(1 - physicsConfig.friction));
@@ -227,13 +237,14 @@ export class Ball {
 
                 const radius = ballConfig.diameter / 2;
                 const period = radius * 2;
-                const textureDriftScale = radius * 0.32;
+                // idle coasting: spinVelocity = omega = v/r, textureDriftScale = r/π → offset = v/π ✓
+                const textureDriftScale = (radius / Math.PI) * Ball._spinBoost;
                 this._surfaceOffset.addTo(new Vector2(-this._spinVelocity.y * textureDriftScale, this._spinVelocity.x * textureDriftScale));
                 this._surfaceOffset = new Vector2(
                     Ball.wrapOffset(this._surfaceOffset.x, period),
                     Ball.wrapOffset(this._surfaceOffset.y, period),
                 );
-                this._spinRoll = Ball.quantize(this._spinRoll + this._spinVelocity.z * 0.2);
+                this._spinRoll = Ball.quantize(this._spinRoll + this._spinVelocity.z * 0.2 * Ball._spinBoost);
             }
         }
     }
@@ -250,6 +261,17 @@ export class Ball {
                 // Ball._lightTexture || undefined,
             );
             Canvas2D.drawCircle(this._position, ballConfig.diameter / 2, 'rgba(255,255,255,0.45)', false, 1);
+            // if (this._ballNumber > 0) {
+            //     const fontSize = Math.max(8, Math.round(ballConfig.diameter * 0.48));
+            //     Canvas2D.drawText(
+            //         this._ballNumber.toString(),
+            //         `bold ${fontSize}px Arial`,
+            //         '#ffffff',
+            //         { x: this._position.x, y: this._position.y + fontSize * 0.35 },
+            //         'center',
+            //         'alphabetic',
+            //     );
+            // }
         }
     }
 }

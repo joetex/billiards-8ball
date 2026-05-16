@@ -93,12 +93,13 @@ class Canvas2D_Singleton {
     }
 
 
-    public drawText(text: string, font:string, color: string, position: IVector2, textAlign: string = 'left'): void {
+    public drawText(text: string, font:string, color: string, position: IVector2, textAlign: string = 'left', textBaseline: string = 'alphabetic'): void {
         this._context.save();
         this._context.scale(this._scale.x, this._scale.y);
         this._context.fillStyle = color;
         this._context.font = font;
         this._context.textAlign = textAlign as CanvasTextAlign;
+        this._context.textBaseline = textBaseline as CanvasTextBaseline;
         this._context.fillText(text, position.x, position.y);
         this._context.restore();
     }
@@ -108,7 +109,6 @@ class Canvas2D_Singleton {
         this._context.scale(this._scale.x, this._scale.y);
         this._context.strokeStyle = color;
         this._context.lineWidth = width;
-        this._context.beginPath();
         this._context.moveTo(start.x, start.y);
         this._context.lineTo(end.x, end.y);
         this._context.stroke();
@@ -126,7 +126,6 @@ class Canvas2D_Singleton {
         } else {
             this._context.strokeStyle = color;
             this._context.lineWidth = width;
-            this._context.stroke();
         }
         this._context.restore();
     }
@@ -173,20 +172,26 @@ class Canvas2D_Singleton {
         this._context.rotate(roll);
 
         const diameter = radius * 2;
-        const wrappedX = ((textureOffset.x % diameter) + diameter) % diameter;
-        const wrappedY = ((textureOffset.y % diameter) + diameter) % diameter;
-        const startX = Math.round(-radius - wrappedX);
-        const startY = Math.round(-radius - wrappedY);
+        const textureAspect = texture.naturalHeight > 0 ? texture.naturalWidth / texture.naturalHeight : 1;
+
+        // Preserve source aspect ratio so circular decals on rectangular textures stay circular.
+        const tileHeight = diameter;
+        const tileWidth = diameter * textureAspect;
+
+        const wrappedX = ((textureOffset.x % tileWidth) + tileWidth) % tileWidth;
+        const wrappedY = ((textureOffset.y % tileHeight) + tileHeight) % tileHeight;
+        const startX = Math.round(-tileWidth / 2 - wrappedX);
+        const startY = Math.round(-tileHeight / 2 - wrappedY);
         const seamBleed = 1;
 
-        for (let ix = 0; ix < 3; ix++) {
-            for (let iy = 0; iy < 3; iy++) {
+        for (let ix = 0; ix < 4; ix++) {
+            for (let iy = 0; iy < 4; iy++) {
                 this._context.drawImage(
                     texture,
-                    startX + ix * diameter,
-                    startY + iy * diameter,
-                    diameter + seamBleed,
-                    diameter + seamBleed,
+                    startX + ix * tileWidth,
+                    startY + iy * tileHeight,
+                    tileWidth + seamBleed,
+                    tileHeight + seamBleed,
                 );
             }
         }

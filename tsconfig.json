@@ -16,6 +16,6 @@
             "@acosgames/framework": ["../acosgames/framework/src/index.ts"]
         }
     },
-    "include": ["game-client/**/*.ts"],
+    "include": ["game-client/**/*.ts", "shared/**/*.ts"],
     "exclude": ["node_modules", "builds"]
 }

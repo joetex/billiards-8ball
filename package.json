@@ -20,14 +20,19 @@
     "dependencies": {
         "@acosgames/framework": "file:../acosgames/framework",
         "@acosgames/simulator": "file:../acosgames/simulator",
-        "phaser": "^3.87.0"
+        "phaser": "^3.87.0",
+        "propel-js": "^1.0.26"
     },
     "devDependencies": {
         "@rollup/plugin-json": "^6.1.0",
         "@rollup/plugin-node-resolve": "^15.2.3",
         "@rollup/plugin-terser": "^1.0.0",
+        "@rollup/plugin-typescript": "^12.1.2",
+        "@types/node": "^24.10.1",
         "concurrently": "^9.2.1",
         "rollup": "^4.60.1",
+        "tslib": "^2.8.1",
+        "typescript": "^5.9.3",
         "vite": "^8.0.8"
     }
 }

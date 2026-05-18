@@ -32,6 +32,25 @@ const ball14TextureUrl = 'assets/balls/ball.pool14.webp';
 const ball15TextureUrl = 'assets/balls/ball.pool15.webp';
 const cueBallTextureUrl = 'assets/balls/ball.cue.webp';
 
+const textureByBallNumber: Record<number, string> = {
+    0: cueBallTextureUrl,
+    1: ball1TextureUrl,
+    2: ball2TextureUrl,
+    3: ball3TextureUrl,
+    4: ball4TextureUrl,
+    5: ball5TextureUrl,
+    6: ball6TextureUrl,
+    7: ball7TextureUrl,
+    8: ball8TextureUrl,
+    9: ball9TextureUrl,
+    10: ball10TextureUrl,
+    11: ball11TextureUrl,
+    12: ball12TextureUrl,
+    13: ball13TextureUrl,
+    14: ball14TextureUrl,
+    15: ball15TextureUrl,
+};
+
 export const BALL_TEXTURE_PATHS: string[] = [
     ball1TextureUrl, ball2TextureUrl, ball3TextureUrl, ball4TextureUrl,
     ball5TextureUrl, ball6TextureUrl, ball7TextureUrl, ball8TextureUrl,
@@ -53,6 +72,7 @@ const aiConfig: IAIConfig = GameConfig.ai;
 const gameSize: IVector2 = GameConfig.gameSize;
 const sprites: IAssetsConfig = GameConfig.sprites;
 const sounds: IAssetsConfig = GameConfig.sounds;
+const hudBarHeight = 56;  // Visual height of HUD bar at top of screen
 export class GameWorld {
 
     //------Members------//
@@ -74,6 +94,7 @@ export class GameWorld {
     private _lastSentCueY: number | null = null;
     private _lastAppliedShotSerial: number = -1;
     private _lastStartedShotSerial: number = -1;
+    private _lastSeenServerShotSerial: number = -1;
     private _localCuePlacePending: boolean = false;
     private _remoteStickTargetAngle: number = 0;
     private _cueBallInterpFrom: Vector2 | null = null;
@@ -87,6 +108,13 @@ export class GameWorld {
     private _cueBallPlacementDragging: boolean = false;
     private _shotPlaybackFrames: Array<Array<{ id: number; number: number; type: 'solid' | 'stripe' | 'eight' | 'cue'; x: number; y: number; vx: number; vy: number; visible: boolean }>> | null = null;
     private _shotPlaybackFrameIndex: number = 0;
+    private _shotPlaybackLockUntilMs: number = 0;
+    private _lastSyncMismatchCount: number = 0;
+    private _cuePlacementIsValid: boolean = false;
+    private _ballInHandResetApplied: boolean = false;
+    private _playbackCollidedPairs: Set<string> = new Set(); // Track which ball pairs have collided during playback
+    private _pocketedBallsThisTurn: Set<number> = new Set(); // Track which balls have been pocketed this turn (across playback and live physics)
+    private _lastCuePlaceConfirmedAt: number = 0; // Timestamp when cue-place was confirmed by server
 
     //------Properties------//
 
@@ -107,7 +135,7 @@ export class GameWorld {
             const inHand = this._serverGameState?.state?.cueBallInHand === true;
             const shotSerial = this._serverGameState?.state?.shotSerial;
             const awaitingShotResolution = typeof shotSerial === 'number' && shotSerial > this._lastAppliedShotSerial;
-            const hasActivePlayback = this._shotPlaybackFrames !== null || this.isBallsMoving;
+            const hasActivePlayback = this._shotPlaybackFrames !== null;
             if (awaitingShotResolution || hasActivePlayback) {
                 return false;
             }
@@ -141,7 +169,7 @@ export class GameWorld {
 
     //------Private Methods------//
 
-    private createPlaybackBaseBalls(): Array<{ x: number; y: number; vx: number; vy: number; visible: boolean }> {
+    private createPlaybackBaseBalls(): Array<{ id: number; number: number; type: 'solid' | 'stripe' | 'eight' | 'cue'; x: number; y: number; vx: number; vy: number; visible: boolean }> {
         // Playback must start from the local pre-shot state. Using server state here
         // would use post-shot authoritative positions and break deterministic replay.
         return this._balls.map((ball: Ball) => ({
@@ -206,10 +234,15 @@ export class GameWorld {
         if (power <= 0) {
             this._shotPlaybackFrames = null;
             this._shotPlaybackFrameIndex = 0;
+            this._shotPlaybackLockUntilMs = 0;
             return;
         }
         this._shotPlaybackFrames = this.simulateShotPlaybackFrames(angle, power);
         this._shotPlaybackFrameIndex = 0;
+        this._playbackCollidedPairs.clear(); // Reset collision tracking for new playback
+        this._pocketedBallsThisTurn.clear(); // Reset pocket tracking for new turn
+        const minLockMs = 120;
+        this._shotPlaybackLockUntilMs = performance.now() + Math.max(minLockMs, this._shotPlaybackFrames.length * (1000 / 120));
     }
 
     private applyPlaybackFrame(frame: Array<{ id: number; number: number; type: 'solid' | 'stripe' | 'eight' | 'cue'; x: number; y: number; vx: number; vy: number; visible: boolean }>): void {
@@ -231,12 +264,18 @@ export class GameWorld {
             dst.velocity = new Vector2(src.vx, src.vy);
             dst.tickSpin();
         }
+        
+        // Detect and play collision sounds during playback
+        this.detectPlaybackCollisions();
+        // Detect and play pocket sounds during playback
+        this.detectPlaybackPockets();
     }
 
     private updateShotPlayback(): void {
         if (!this._shotPlaybackFrames || this._shotPlaybackFrameIndex >= this._shotPlaybackFrames.length) {
             this._shotPlaybackFrames = null;
             this._shotPlaybackFrameIndex = 0;
+            // Don't clear collision tracking - let it persist to prevent duplicate sounds in live physics
             return;
         }
         const frame = this._shotPlaybackFrames[this._shotPlaybackFrameIndex];
@@ -245,6 +284,7 @@ export class GameWorld {
         if (this._shotPlaybackFrameIndex >= this._shotPlaybackFrames.length) {
             this._shotPlaybackFrames = null;
             this._shotPlaybackFrameIndex = 0;
+            // Don't clear collision tracking - let it persist to prevent duplicate sounds in live physics
         }
     }
 
@@ -260,6 +300,74 @@ export class GameWorld {
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         return from + diff * t;
+    }
+
+    private detectPlaybackCollisions(): void {
+        // Detect ball-to-ball collisions during playback and play collision sounds
+        // This is separate from physics collision resolution - just for audio feedback
+        for (let i = 0; i < this._balls.length; i++) {
+            const firstBall = this._balls[i];
+            if (!firstBall.visible) continue;
+            
+            for (let j = i + 1; j < this._balls.length; j++) {
+                const secondBall = this._balls[j];
+                if (!secondBall.visible) continue;
+                
+                const delta = secondBall.position.subtract(firstBall.position);
+                const dist = delta.length;
+                
+                // Check if balls are colliding (within collision distance)
+                if (dist < ballConfig.diameter && dist > 0) {
+                    // Create unique pair identifier (always smaller id first)
+                    const pairKey = `${Math.min(firstBall.ballNumber, secondBall.ballNumber)}-${Math.max(firstBall.ballNumber, secondBall.ballNumber)}`;
+                    
+                    // Only play sound once per collision per turn
+                    if (!this._playbackCollidedPairs.has(pairKey)) {
+                        this._playbackCollidedPairs.add(pairKey);
+                        
+                        // Calculate collision force for volume (boosted by 50% with minimum floor)
+                        const force = firstBall.velocity.length + secondBall.velocity.length;
+                        const baseVolume = mapRange(force, 0, ballConfig.maxExpectedCollisionForce, 0, 1);
+                        const volume = Math.min(1, Math.max(0.2, baseVolume * 1.5));
+                        Assets.playSound(sounds.paths.ballsCollide, volume);
+                    }
+                } else if (dist >= ballConfig.diameter * 1.5) {
+                    // Balls have separated significantly, allow re-collision
+                    const pairKey = `${Math.min(firstBall.ballNumber, secondBall.ballNumber)}-${Math.max(firstBall.ballNumber, secondBall.ballNumber)}`;
+                    this._playbackCollidedPairs.delete(pairKey);
+                }
+            }
+        }
+    }
+
+    private detectPlaybackPockets(): void {
+        // Detect balls going into pockets during playback and play pocket sounds
+        for (let i = 0; i < this._balls.length; i++) {
+            const ball = this._balls[i];
+            
+            // Check if ball just became invisible (went into pocket)
+            if (!ball.visible && !this._pocketedBallsThisTurn.has(ball.ballNumber)) {
+                this._pocketedBallsThisTurn.add(ball.ballNumber);
+                Assets.playSound(sounds.paths.rail, 1);
+            }
+        }
+    }
+
+    private getTableBoundaries(): { minX: number; maxX: number; minY: number; maxY: number } {
+        const ballRadius = ballConfig.diameter / 2;
+        // Boundaries in physics space [0, 1500] x [0, 750] where balls actually exist
+        // Rendering offset is applied separately during draw()
+        const tableLeft = tableConfig.cushionWidth;
+        const tableRight = 1500 - tableConfig.cushionWidth;
+        const tableTop = tableConfig.cushionWidth;
+        const tableBottom = 750 - tableConfig.cushionWidth;
+        
+        return {
+            minX: tableLeft + ballRadius,
+            maxX: tableRight - ballRadius,
+            minY: tableTop + ballRadius,
+            maxY: tableBottom - ballRadius,
+        };
     }
 
     private getBallsByColor(color: Color): Ball[] {
@@ -294,6 +402,7 @@ export class GameWorld {
         if (!Array.isArray(balls) || balls.length === 0) {
             return;
         }
+        const freezeForBallInHand = rawState?.cueBallInHand === true && rawState?.shotInProgress !== true;
         for (let i = 0; i < balls.length; i++) {
             const src = balls[i];
             const dst = this.findLocalBallForServerBall(src);
@@ -303,7 +412,13 @@ export class GameWorld {
             if (!src || typeof src.x !== 'number' || typeof src.y !== 'number') {
                 continue;
             }
+            const isCueBall = dst.ballNumber === 0;
             if (src.visible === false) {
+                if (freezeForBallInHand && isCueBall) {
+                    dst.show(new Vector2(src.x, src.y));
+                    dst.velocity = Vector2.zero;
+                    continue;
+                }
                 dst.hide();
                 continue;
             }
@@ -312,9 +427,178 @@ export class GameWorld {
             } else {
                 dst.position = new Vector2(src.x, src.y);
             }
-            if (typeof src.vx === 'number' && typeof src.vy === 'number') {
+            if (freezeForBallInHand) {
+                dst.velocity = Vector2.zero;
+            } else if (typeof src.vx === 'number' && typeof src.vy === 'number') {
                 dst.velocity = new Vector2(src.vx, src.vy);
             }
+        }
+    }
+
+    private isAimOnlyServerUpdate(previousState: any, nextState: any): boolean {
+        if (!previousState || !nextState) {
+            return false;
+        }
+
+        if (previousState.shotSerial !== nextState.shotSerial) {
+            return false;
+        }
+
+        const cueChanged = previousState.cueAngle !== nextState.cueAngle || previousState.cuePower !== nextState.cuePower;
+        if (!cueChanged) {
+            return false;
+        }
+
+        const shotContextUnchanged =
+            previousState.shotInProgress === nextState.shotInProgress &&
+            previousState.shotBy === nextState.shotBy &&
+            previousState.shotAngle === nextState.shotAngle &&
+            previousState.shotPower === nextState.shotPower &&
+            previousState.cueBallInHand === nextState.cueBallInHand;
+
+        if (!shotContextUnchanged) {
+            return false;
+        }
+
+        const prevBalls = previousState.balls;
+        const nextBalls = nextState.balls;
+        if (!Array.isArray(prevBalls) || !Array.isArray(nextBalls) || prevBalls.length !== nextBalls.length) {
+            return false;
+        }
+
+        for (let i = 0; i < prevBalls.length; i++) {
+            const prevBall = prevBalls[i];
+            const nextBall = nextBalls[i];
+            if (!prevBall || !nextBall) {
+                return false;
+            }
+            if (prevBall.number !== nextBall.number || prevBall.visible !== nextBall.visible) {
+                return false;
+            }
+            if (Math.abs(prevBall.x - nextBall.x) > 0.0001 || Math.abs(prevBall.y - nextBall.y) > 0.0001) {
+                return false;
+            }
+            if (Math.abs((prevBall.vx || 0) - (nextBall.vx || 0)) > 0.0001 || Math.abs((prevBall.vy || 0) - (nextBall.vy || 0)) > 0.0001) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private isCueMoveOnlyServerUpdate(previousState: any, nextState: any): boolean {
+        if (!previousState || !nextState) {
+            return false;
+        }
+
+        if (previousState.shotSerial !== nextState.shotSerial) {
+            return false;
+        }
+
+        // Cue-move packets happen while cue ball is in hand and should not trigger
+        // shot playback/authoritative ball-state reconciliation.
+        if (nextState.cueBallInHand !== true) {
+            return false;
+        }
+
+        const shotContextUnchanged =
+            previousState.shotInProgress === nextState.shotInProgress &&
+            previousState.shotBy === nextState.shotBy &&
+            previousState.shotAngle === nextState.shotAngle &&
+            previousState.shotPower === nextState.shotPower;
+
+        if (!shotContextUnchanged) {
+            return false;
+        }
+
+        const prevPlacement = previousState.cueBallPlacement;
+        const nextPlacement = nextState.cueBallPlacement;
+        const placementChanged =
+            !!prevPlacement &&
+            !!nextPlacement &&
+            (prevPlacement.x !== nextPlacement.x ||
+                prevPlacement.y !== nextPlacement.y ||
+                prevPlacement.updatedAt !== nextPlacement.updatedAt ||
+                prevPlacement.placed !== nextPlacement.placed ||
+                prevPlacement.by !== nextPlacement.by);
+
+        if (!placementChanged) {
+            return false;
+        }
+
+        const prevBalls = previousState.balls;
+        const nextBalls = nextState.balls;
+        if (!Array.isArray(prevBalls) || !Array.isArray(nextBalls) || prevBalls.length !== nextBalls.length) {
+            return false;
+        }
+
+        // Only cue ball is allowed to move in a cue-move update.
+        for (let i = 0; i < prevBalls.length; i++) {
+            const prevBall = prevBalls[i];
+            const nextBall = nextBalls[i];
+            if (!prevBall || !nextBall || prevBall.number !== nextBall.number) {
+                return false;
+            }
+            if (prevBall.number === 0) {
+                continue;
+            }
+            if (prevBall.visible !== nextBall.visible) {
+                return false;
+            }
+            if (Math.abs(prevBall.x - nextBall.x) > 0.0001 || Math.abs(prevBall.y - nextBall.y) > 0.0001) {
+                return false;
+            }
+            if (Math.abs((prevBall.vx || 0) - (nextBall.vx || 0)) > 0.0001 || Math.abs((prevBall.vy || 0) - (nextBall.vy || 0)) > 0.0001) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private verifyBallSync(rawState: any): void {
+        const serverBalls = rawState?.balls;
+        if (!Array.isArray(serverBalls) || serverBalls.length === 0) {
+            this._lastSyncMismatchCount = 0;
+            return;
+        }
+
+        let mismatches = 0;
+        let maxPositionDelta = 0;
+
+        for (let i = 0; i < serverBalls.length; i++) {
+            const src = serverBalls[i];
+            const dst = this.findLocalBallForServerBall(src);
+            if (!dst || !src || typeof src.x !== 'number' || typeof src.y !== 'number') {
+                continue;
+            }
+
+            if (src.visible === false) {
+                if (dst.visible) {
+                    mismatches++;
+                }
+                continue;
+            }
+
+            if (!dst.visible) {
+                mismatches++;
+                continue;
+            }
+
+            const delta = dst.position.distFrom(new Vector2(src.x, src.y));
+            maxPositionDelta = Math.max(maxPositionDelta, delta);
+            if (delta > 0.75) {
+                mismatches++;
+            }
+        }
+
+        this._lastSyncMismatchCount = mismatches;
+        if (mismatches > 0) {
+            console.warn('[PoolSync] Final playback mismatch before authoritative snap', {
+                mismatches,
+                maxPositionDelta,
+                shotSerial: rawState?.shotSerial,
+            });
         }
     }
 
@@ -323,6 +607,10 @@ export class GameWorld {
         if (!msg || typeof msg !== 'object') {
             return;
         }
+
+        const previousState = this._serverGameState?.state;
+        const isAimOnlyUpdate = this.isAimOnlyServerUpdate(previousState, msg?.state);
+        const isCueMoveOnlyUpdate = this.isCueMoveOnlyServerUpdate(previousState, msg?.state);
 
         this._serverGameState = msg;
         const localId = msg?.local?.id;
@@ -344,7 +632,11 @@ export class GameWorld {
                 const target = new Vector2(cuePlacement.x, cuePlacement.y);
 
                 if (cuePlacement.by === this._localPlayerId) {
-                    this._cueBall.show(target);
+                    // Don't apply server updates immediately after local player placed (prevents snap-back)
+                    const recentlyPlaced = performance.now() - this._lastCuePlaceConfirmedAt < 500;
+                    if (!this._cueBallPlacementDragging && !recentlyPlaced) {
+                        this._cueBall.show(target);
+                    }
                 } else {
                     this.startCueBallInterpolation(target);
                 }
@@ -352,6 +644,7 @@ export class GameWorld {
 
             if (cuePlacement.placed === true && cuePlacement.by === this._localPlayerId) {
                 this._localCuePlacePending = false;
+                this._lastCuePlaceConfirmedAt = performance.now();
             }
 
             if (cuePlacement.placed === true && cueInHand === false) {
@@ -362,11 +655,15 @@ export class GameWorld {
 
         const shotSerial = msg?.state?.shotSerial;
 
-        // Detect new game: when shotSerial resets to 0, reset serial tracking so the
-        // break shot and initial ball positions are applied correctly.
-        if (typeof shotSerial === 'number' && shotSerial <= 0) {
+        // Reset serial tracking only on true match reset (first state or serial rollback),
+        // not on every pre-break shotSerial=0 state update.
+        const shouldResetSerialState =
+            typeof shotSerial === 'number' &&
+            (this._lastSeenServerShotSerial < 0 || shotSerial < this._lastSeenServerShotSerial);
+        if (shouldResetSerialState) {
             this._lastAppliedShotSerial = -1;
             this._lastStartedShotSerial = -1;
+            this._lastSeenServerShotSerial = shotSerial;
             this._pendingServerBalls = null;
             this._pendingServerSerial = -1;
             this._shotPlaybackFrames = null;
@@ -383,31 +680,38 @@ export class GameWorld {
 
         // Always queue the latest server state for position sync.
         // Applied after any active playback finishes (see update()).
-        if (msg.state) {
-            this._pendingServerBalls = msg.state;
+        if (msg.state && !isAimOnlyUpdate && !isCueMoveOnlyUpdate) {
+            const authoritativeBalls = Array.isArray(msg.state.shotResultBalls) && msg.state.shotResultBalls.length > 0
+                ? msg.state.shotResultBalls
+                : msg.state.balls;
+            this._pendingServerBalls = authoritativeBalls ? { ...msg.state, balls: authoritativeBalls } : msg.state;
             this._pendingServerSerial = typeof shotSerial === 'number' ? shotSerial : -1;
         }
 
-        if (typeof shotSerial === 'number' && shotSerial > this._lastAppliedShotSerial) {
-            // Trigger local ball simulation for opponent shots so they animate on this client
-            if (
-                shotSerial > this._lastStartedShotSerial &&
-                typeof msg?.state?.shotBy === 'number' &&
-                msg.state.shotBy !== this._localPlayerId
-            ) {
-                if (
-                    typeof msg?.state?.shotAngle === 'number' &&
-                    typeof msg?.state?.shotPower === 'number' &&
-                    msg.state.shotPower > 0
-                ) {
-                    const shotAngle = decodeAngleFromUint(msg.state.shotAngle);
-                    const shotPower = decodePowerFromUint(msg.state.shotPower);
-                    this._lastStartedShotSerial = shotSerial;
-                    this._stick.show(this._cueBall.position);
-                    this.shootCueBall(shotPower, shotAngle);
-                }
+        const hasUnplayedRemoteShotSerial = typeof shotSerial === 'number' && shotSerial > this._lastStartedShotSerial;
+        if (
+            hasUnplayedRemoteShotSerial &&
+            typeof shotSerial === 'number' &&
+            shotSerial > this._lastStartedShotSerial &&
+            typeof msg?.state?.shotBy === 'number' &&
+            this._localPlayerId !== null &&
+            msg.state.shotBy !== this._localPlayerId &&
+            typeof msg?.state?.shotAngle === 'number' &&
+            typeof msg?.state?.shotPower === 'number'
+        ) {
+            const shotPower = decodePowerFromUint(msg.state.shotPower);
+            if (shotPower > 0) {
+                const shotAngle = decodeAngleFromUint(msg.state.shotAngle);
+                this._lastStartedShotSerial = shotSerial;
+                this._stick.show(this._cueBall.position);
+                this.shootCueBall(shotPower, shotAngle, false);
             }
         }
+
+        if (typeof shotSerial === 'number') {
+            this._lastSeenServerShotSerial = Math.max(this._lastSeenServerShotSerial, shotSerial);
+        }
+
     }
 
     private isLocalPlayersTurn(): boolean {
@@ -439,7 +743,18 @@ export class GameWorld {
     }
 
     private sendAimUpdate(nowMs: number): void {
-        if (!this.isLocalPlayersTurn() || !this._stick.visible || this.isBallsMoving || this.isBallInHand) {
+        const shotInProgress = this._serverGameState?.state?.shotInProgress === true;
+        if (
+            !this.isLocalPlayersTurn() ||
+            !this._stick.visible ||
+            this.isBallsMoving ||
+            this.isBallInHand ||
+            this._stick.aiming ||
+            this._shotPlaybackFrames !== null ||
+            this._pendingServerBalls !== null ||
+            shotInProgress ||
+            !this._stickFollowsCueBall
+        ) {
             return;
         }
 
@@ -478,17 +793,19 @@ export class GameWorld {
             const shotPowerUint = encodePowerToUint(queuedShot.power);
             const shotAngle = decodeAngleFromUint(shotAngleUint);
             const shotPower = decodePowerFromUint(shotPowerUint);
+            if (shotPower <= 0) {
+                return;
+            }
             ACOSClient.send('shoot', { angle: shotAngleUint, power: shotPowerUint });
+            this._lastSentAngle = shotAngleUint;
+            this._lastAimSentAtMs = performance.now();
             this.shootCueBall(shotPower, shotAngle);
         }
     }
 
     private getRayCollisionWithWall(origin: Vector2, direction: Vector2): { point: Vector2; t: number } | null {
-        const ballRadius = ballConfig.diameter / 2;
-        const minX = tableConfig.cushionWidth + ballRadius;
-        const maxX = gameSize.x - tableConfig.cushionWidth - ballRadius;
-        const minY = tableConfig.cushionWidth + ballRadius;
-        const maxY = gameSize.y - tableConfig.cushionWidth - ballRadius;
+        const bounds = this.getTableBoundaries();
+        const { minX, maxX, minY, maxY } = bounds;
 
         const candidates: { point: Vector2; t: number }[] = [];
 
@@ -557,7 +874,9 @@ export class GameWorld {
             return;
         }
 
+        const renderOffset = new Vector2(0, GameConfig.physicsWorldYOffset);
         const origin = this._cueBall.position;
+        const renderOrigin = origin.add(renderOffset);
         const direction = new Vector2(Math.cos(this._stick.rotation), Math.sin(this._stick.rotation));
         const wallHit = this.getRayCollisionWithWall(origin, direction);
         const ballHit = this.getRayCollisionWithBall(origin, direction);
@@ -567,8 +886,8 @@ export class GameWorld {
         }
 
         if (ballHit && (!wallHit || ballHit.t < wallHit.t)) {
-            Canvas2D.drawLine(origin, ballHit.point, '#ffffff', 2);
-            Canvas2D.drawCircle(ballHit.point, (ballConfig.diameter / 2), '#ffffff', false, 2);
+            Canvas2D.drawLine(renderOrigin, ballHit.point.add(renderOffset), '#ffffff', 2);
+            Canvas2D.drawCircle(ballHit.point.add(renderOffset), (ballConfig.diameter / 2), '#ffffff', false, 2);
 
             const struckBallCenter = ballHit.ball.position;
             const struckDirRaw = struckBallCenter.subtract(ballHit.point);
@@ -576,58 +895,70 @@ export class GameWorld {
                 const struckDirection = struckDirRaw.mult(1 / struckDirRaw.length);
                 const struckWallHit = this.getRayCollisionWithWall(struckBallCenter, struckDirection);
                 const struckEnd = struckWallHit ? struckWallHit.point : struckBallCenter.add(struckDirection.mult(250));
-                Canvas2D.drawLine(struckBallCenter, struckEnd, '#ffffff', 2);
+                Canvas2D.drawLine(struckBallCenter.add(renderOffset), struckEnd.add(renderOffset), '#ffffff', 2);
             }
             return;
         }
 
         if (wallHit) {
-            Canvas2D.drawLine(origin, wallHit.point, '#ffffff', 2);
-            Canvas2D.drawCircle(wallHit.point, (ballConfig.diameter / 2), '#ffffff', false, 2);
+            Canvas2D.drawLine(renderOrigin, wallHit.point.add(renderOffset), '#ffffff', 2);
+            Canvas2D.drawCircle(wallHit.point.add(renderOffset), (ballConfig.diameter / 2), '#ffffff', false, 2);
         }
     }
 
     private isBallPosOutsideTopBorder(position: Vector2): boolean {
-        const topBallEdge: number = position.y - ballConfig.diameter / 2;
-        return topBallEdge <= tableConfig.cushionWidth;
+        const bounds = this.getTableBoundaries();
+        return position.y < bounds.minY;
     }
 
     private isBallPosOutsideLeftBorder(position: Vector2): boolean {
-        const leftBallEdge: number = position.x - ballConfig.diameter / 2;
-        return leftBallEdge <= tableConfig.cushionWidth;
+        const bounds = this.getTableBoundaries();
+        return position.x < bounds.minX;
     }
 
     private isBallPosOutsideRightBorder(position: Vector2): boolean {
-        const rightBallEdge: number = position.x + ballConfig.diameter / 2;
-        return rightBallEdge >= gameSize.x - tableConfig.cushionWidth;
+        const bounds = this.getTableBoundaries();
+        return position.x > bounds.maxX;
     }
 
     private isBallPosOutsideBottomBorder(position: Vector2): boolean {
-        const bottomBallEdge: number = position.y + ballConfig.diameter / 2;
-        return bottomBallEdge >= gameSize.y - tableConfig.cushionWidth;
+        const bounds = this.getTableBoundaries();
+        return position.y > bounds.maxY;
     }
 
     private handleCollisionWithTopCushion(ball: Ball): void {
-        ball.position = ball.position.addY(tableConfig.cushionWidth - ball.position.y + ballConfig.diameter / 2);
+        const bounds = this.getTableBoundaries();
+        ball.position = new Vector2(ball.position.x, bounds.minY);
         ball.velocity = new Vector2(ball.velocity.x, -ball.velocity.y);
     }
 
     private handleCollisionWithLeftCushion(ball: Ball): void {
-        ball.position = ball.position.addX(tableConfig.cushionWidth - ball.position.x + ballConfig.diameter / 2);
+        const bounds = this.getTableBoundaries();
+        ball.position = new Vector2(bounds.minX, ball.position.y);
         ball.velocity = new Vector2(-ball.velocity.x, ball.velocity.y);
     }
 
     private handleCollisionWithRightCushion(ball: Ball): void {
-        ball.position = ball.position.addX(gameSize.x - tableConfig.cushionWidth - ball.position.x - ballConfig.diameter / 2);
+        const bounds = this.getTableBoundaries();
+        ball.position = new Vector2(bounds.maxX, ball.position.y);
         ball.velocity = new Vector2(-ball.velocity.x, ball.velocity.y);
     }
 
     private handleCollisionWithBottomCushion(ball: Ball): void {
-        ball.position = ball.position.addY(gameSize.y - tableConfig.cushionWidth - ball.position.y - ballConfig.diameter / 2);
+        const bounds = this.getTableBoundaries();
+        ball.position = new Vector2(ball.position.x, bounds.maxY);
         ball.velocity = new Vector2(ball.velocity.x, -ball.velocity.y);
     }
 
+    private isCueBallCollisionDisabled(): boolean {
+        return this._serverGameState?.state?.cueBallInHand === true || this._localCuePlacePending;
+    }
+
     private resolveBallCollisionWithCushion(ball: Ball): void {
+
+        if (ball.ballNumber === 0 && this.isCueBallCollisionDisabled()) {
+            return;
+        }
 
         let collided: boolean = false;
 
@@ -678,7 +1009,7 @@ export class GameWorld {
         const velocityAlongNormal: number = relativeVelocity.dot(normal);
 
         if (velocityAlongNormal >= 0) {
-            return true;
+            return false;  // Balls already separating, no collision to resolve
         }
 
         const impactSpeed: number = Math.abs(velocityAlongNormal);
@@ -700,12 +1031,26 @@ export class GameWorld {
             for(let j = i + 1 ; j < this._balls.length ; j++ ){
                 const firstBall = this._balls[i];
                 const secondBall = this._balls[j];
+
+                if (
+                    this.isCueBallCollisionDisabled() &&
+                    (firstBall.ballNumber === 0 || secondBall.ballNumber === 0)
+                ) {
+                    continue;
+                }
+
                 const collided = this.resolveBallsCollision(firstBall, secondBall);
                 
                 if(collided){
-                    const force: number = firstBall.velocity.length + secondBall.velocity.length
-                    const volume: number = mapRange(force, 0, ballConfig.maxExpectedCollisionForce, 0, 1);
-                    Assets.playSound(sounds.paths.ballsCollide, volume);
+                    // Only play sound if this collision pair hasn't been heard during playback
+                    const pairKey = `${Math.min(firstBall.ballNumber, secondBall.ballNumber)}-${Math.max(firstBall.ballNumber, secondBall.ballNumber)}`;
+                    if (!this._playbackCollidedPairs.has(pairKey)) {
+                        this._playbackCollidedPairs.add(pairKey);
+                        const force: number = firstBall.velocity.length + secondBall.velocity.length
+                        const baseVolume: number = mapRange(force, 0, ballConfig.maxExpectedCollisionForce, 0, 1);
+                        const volume: number = Math.min(1, Math.max(0.2, baseVolume * 1.5));
+                        Assets.playSound(sounds.paths.ballsCollide, volume);
+                    }
 
                     if(!this._turnState.firstCollidedBallColor) {
                         const color: Color = firstBall.color === Color.white ? secondBall.color : firstBall.color;
@@ -737,7 +1082,11 @@ export class GameWorld {
         this._balls.forEach((ball: Ball) => {
             this.resolveBallInPocket(ball);
             if (!ball.visible && !this._turnState.pocketedBalls.includes(ball)) {
-                Assets.playSound(sounds.paths.rail, 1);
+                // Only play sound if this ball wasn't pocketed during playback
+                if (!this._pocketedBallsThisTurn.has(ball.ballNumber)) {
+                    this._pocketedBallsThisTurn.add(ball.ballNumber);
+                    Assets.playSound(sounds.paths.rail, 1);
+                }
                 if(!this.currentPlayer.color && this.isValidPlayerColor(ball.color)) {
                     this.currentPlayer.color = ball.color;
                     this.nextPlayer.color = ball.color === Color.yellow ? Color.red : Color.yellow;
@@ -750,17 +1099,51 @@ export class GameWorld {
     private handleBallInHand(): void {
 
         const nowMs = performance.now();
+
+        // Entering foul placement: teleport cue to break-area start only once,
+        // after playback has completed and ball-in-hand is active.
+        if (!this._ballInHandResetApplied) {
+            const breakPosition = Vector2.copy(GameConfig.cueBallPosition);
+            this._cueBall.show(breakPosition);
+            this._cueBallPlacementDragging = false;
+            this._cuePlacementIsValid = this.isValidPosToPlaceCueBall(this._cueBall.position);
+            this._ballInHandResetApplied = true;
+            this._lastSentCueX = breakPosition.x;
+            this._lastSentCueY = breakPosition.y;
+            this._lastCueMoveSentAtMs = nowMs;
+            // Clear collision and pocket tracking from previous turn
+            this._playbackCollidedPairs.clear();
+            this._pocketedBallsThisTurn.clear();
+            ACOSClient.send('cue-move', { x: breakPosition.x, y: breakPosition.y });
+        }
+
+        // During foul placement, keep cue ball visible unless still in playback
+        // Only show after playback completes to prevent showing ball that's in pocket
+        const nowInPlayback = this._shotPlaybackFrames !== null;
+        if (!this._cueBall.visible && !nowInPlayback) {
+            const serverCuePlacement = this.getServerCuePlacement();
+            if (serverCuePlacement) {
+                this._cueBall.show(new Vector2(serverCuePlacement.x, serverCuePlacement.y));
+            } else {
+                this._cueBall.show(Vector2.copy(GameConfig.cueBallPosition));
+            }
+        }
+
         const cueRadius = ballConfig.diameter / 2;
         const currentCuePosition = this._cueBall.position;
+        // Convert mouse position from game space to physics space
+        const mousePhysicsPosition = new Vector2(Mouse.position.x, Mouse.position.y - GameConfig.physicsWorldYOffset);
         const pointerDown = Mouse.isDown(inputConfig.mousePlaceBallButton);
         const pointerPressed = Mouse.isPressed(inputConfig.mousePlaceBallButton);
-        const pointerOnCueBall = Mouse.position.distFrom(currentCuePosition) <= cueRadius;
+        const pointerOnCueBall = mousePhysicsPosition.distFrom(currentCuePosition) <= cueRadius;
 
         // Keep replay authoritative: do not allow placement while a shot replay/state apply is pending.
-        if (this._pendingServerBalls !== null || this._shotPlaybackFrames !== null || this.isBallsMoving) {
+        const shotInProgress = this._serverGameState?.state?.shotInProgress === true;
+        if (this._pendingServerBalls !== null || this._shotPlaybackFrames !== null || shotInProgress) {
             this._stick.movable = false;
             this._stick.visible = false;
             this._cueBallPlacementDragging = false;
+            this._cuePlacementIsValid = false;
             return;
         }
 
@@ -772,34 +1155,34 @@ export class GameWorld {
             return;
         }
 
-        if (this._cueBallPlacementDragging) {
-            this._cueBall.show(Mouse.position);
-        } else {
-            this._cueBall.show(currentCuePosition);
+        if (this._cueBallPlacementDragging && pointerDown) {
+            this._cueBall.show(mousePhysicsPosition);
         }
 
+        this._cuePlacementIsValid = this.isValidPosToPlaceCueBall(this._cueBall.position);
+
         if (pointerPressed && !this._cueBallPlacementDragging) {
-            if (pointerOnCueBall) {
+            if (pointerOnCueBall || !this._cueBall.visible) {
                 this._cueBallPlacementDragging = true;
-            } else {
-                this._localCuePlacePending = true;
-                this.placeBallInHand(currentCuePosition);
-                ACOSClient.send('cue-place', { x: currentCuePosition.x, y: currentCuePosition.y });
-                return;
+                if (!pointerOnCueBall) {
+                    this._cueBall.show(mousePhysicsPosition);
+                }
             }
         }
 
         if (this._cueBallPlacementDragging && !pointerDown) {
             this._cueBallPlacementDragging = false;
-            if (this.isValidPosToPlaceCueBall(this._cueBall.position)) {
+            this._cuePlacementIsValid = this.isValidPosToPlaceCueBall(this._cueBall.position);
+            if (this._cuePlacementIsValid) {
                 this._localCuePlacePending = true;
                 this.placeBallInHand(this._cueBall.position);
+                // Send physics space coordinates (already correct - no offset needed)
                 ACOSClient.send('cue-place', { x: this._cueBall.position.x, y: this._cueBall.position.y });
                 return;
             }
         }
 
-        if (this._cueBallPlacementDragging && nowMs - this._lastCueMoveSentAtMs >= 100) {
+        if (this._cueBallPlacementDragging && this._cuePlacementIsValid && nowMs - this._lastCueMoveSentAtMs >= 100) {
             const currentX = this._cueBall.position.x;
             const currentY = this._cueBall.position.y;
             // Only send if position changed by more than a small threshold (1 pixel)
@@ -816,15 +1199,8 @@ export class GameWorld {
             }
         }
 
-        if(Mouse.isPressed(inputConfig.mousePlaceBallButton) && this.isValidPosToPlaceCueBall(Mouse.position)) {
-            this._localCuePlacePending = true;
-            this.placeBallInHand(Mouse.position);
-            ACOSClient.send('cue-place', { x: Mouse.position.x, y: Mouse.position.y });
-        }
-        else {
-            this._stick.movable = false;
-            this._stick.visible = false;
-        }
+        this._stick.movable = false;
+        this._stick.visible = false;
     }
 
     private handleGameOver(): void {
@@ -840,6 +1216,10 @@ export class GameWorld {
     private nextTurn(): void {
 
         const foul = !this._turnState.isValid;
+
+        // Clear collision and pocket tracking for new turn
+        this._playbackCollidedPairs.clear();
+        this._pocketedBallsThisTurn.clear();
 
         if (this.isGameOver) {
             this.handleGameOver();
@@ -866,36 +1246,143 @@ export class GameWorld {
     }
 
     private drawCurrentPlayerLabel(): void {
-        
-        Canvas2D.drawText(
-            (labelsConfig.currentPlayer.text || 'PLAYER ') + (this._currentPlayerIndex + 1), 
-            labelsConfig.currentPlayer.font, 
-            labelsConfig.currentPlayer.color, 
-            labelsConfig.currentPlayer.position, 
-            labelsConfig.currentPlayer.alignment
-            );
+        const leftName = this.getPlayerDisplayName(0);
+        const rightName = this.getPlayerDisplayName(1);
+        const centerY = hudBarHeight / 2 + 10;
+        Canvas2D.drawText(leftName, 'bold 28px Arial', '#f4f8f2', new Vector2(24, centerY), 'left');
+        Canvas2D.drawText(rightName, 'bold 28px Arial', '#f4f8f2', new Vector2(gameSize.x - 24, centerY), 'right');
+    }
+
+    private resolveRoomPlayerAtIndex(index: number): any {
+        const roomPlayers = this._serverGameState?.room?.players;
+        const statePlayers = this._serverGameState?.players;
+
+        const roomEntry = Array.isArray(roomPlayers) ? roomPlayers[index] : null;
+        if (roomEntry && typeof roomEntry === 'object') {
+            return roomEntry;
+        }
+        if (typeof roomEntry === 'number' && Array.isArray(statePlayers)) {
+            return statePlayers[roomEntry] ?? null;
+        }
+        if (typeof roomEntry === 'string' && Array.isArray(statePlayers)) {
+            const byShortId = statePlayers.find((p: any) => p?.shortid === roomEntry || p?.shortId === roomEntry);
+            if (byShortId) {
+                return byShortId;
+            }
+        }
+
+        if (Array.isArray(statePlayers) && statePlayers[index]) {
+            return statePlayers[index];
+        }
+
+        return null;
+    }
+
+    private readPlayerNameField(player: any): string | null {
+        if (!player || typeof player !== 'object') {
+            return null;
+        }
+
+        const candidates = [
+            player.displayname,
+            player.displayName,
+            player.name,
+            player.username,
+            player.nick,
+            player.shortid,
+            player.shortId,
+            player.profile?.displayname,
+            player.profile?.displayName,
+            player.profile?.name,
+            player.user?.displayname,
+            player.user?.displayName,
+            player.user?.name,
+        ];
+
+        for (const candidate of candidates) {
+            if (typeof candidate === 'string' && candidate.trim().length > 0) {
+                return candidate.trim();
+            }
+        }
+
+        return null;
+    }
+
+    private getPlayerDisplayName(index: number): string {
+        const player = this.resolveRoomPlayerAtIndex(index);
+        const resolved = this.readPlayerNameField(player);
+        if (resolved) {
+            return resolved;
+        }
+
+        return 'Unknown';
+    }
+
+    private getCapturedBallsForPlayer(index: number): Ball[] {
+        const player = this._players[index];
+        if (!player || !player.color) {
+            return [];
+        }
+        return this.getBallsByColor(player.color).filter((ball: Ball) => !ball.visible);
+    }
+
+    private getBallTexturePath(ball: Ball): string {
+        return textureByBallNumber[ball.ballNumber] || cueBallTextureUrl;
+    }
+
+    private drawCapturedBallsRow(start: Vector2, balls: Ball[], alignRight: boolean): void {
+        if (balls.length === 0) {
+            return;
+        }
+
+        const maxShown = Math.min(7, balls.length);
+        for (let i = 0; i < maxShown; i++) {
+            const offsetX = (alignRight ? -1 : 1) * i * 38;
+            const ball = balls[i];
+            const texturePath = this.getBallTexturePath(ball);
+            const texture = Assets.getSprite(texturePath);
+            if (!texture) {
+                continue;
+            }
+            // Identity quaternion (no rotation) for static HUD balls
+            const identityQuaternion = { x: 0, y: 0, z: 0, w: 1 };
+            Canvas2D.drawTexturedSphere(texture, new Vector2(start.x + offsetX, start.y), 19, identityQuaternion);
+        }
     }
 
     private drawMatchScores(): void {
-        for(let i = 0 ; i < this._players.length ; i++){    
-            for(let j = 0 ; j < this._players[i].matchScore ; j++){
-                const scorePosition: Vector2 = Vector2.copy(matchScoreConfig.scoresPositions[i]).addToX(j * matchScoreConfig.unitMargin);
-                const scoreSprite: HTMLImageElement = this._players[i].color === Color.red ? Assets.getSprite(sprites.paths.redScore) : Assets.getSprite(sprites.paths.yellowScore);
-                Canvas2D.drawImage(scoreSprite, scorePosition);
-            }
-        }    
+        const leftCaptured = this.getCapturedBallsForPlayer(0);
+        const rightCaptured = this.getCapturedBallsForPlayer(1);
+
+        const leftName = this.getPlayerDisplayName(0);
+        const rightName = this.getPlayerDisplayName(1);
+        const leftNameWidthEstimate = Math.max(110, Math.min(360, leftName.length * 15));
+        const rightNameWidthEstimate = Math.max(110, Math.min(360, rightName.length * 15));
+
+        const centerY = hudBarHeight / 2;
+        const leftBallsStart = new Vector2(24 + leftNameWidthEstimate + 34, centerY);
+        const rightBallsStart = new Vector2(gameSize.x - 24 - rightNameWidthEstimate - 34, centerY);
+
+        this.drawCapturedBallsRow(leftBallsStart, leftCaptured, false);
+        this.drawCapturedBallsRow(rightBallsStart, rightCaptured, true);
     }
 
     private drawOverallScores(): void {
-        for(let i = 0 ; i < this._players.length ; i++){ 
-            Canvas2D.drawText(
-                this._players[i].overallScore.toString(), 
-                labelsConfig.overalScores[i].font,
-                labelsConfig.overalScores[i].color,
-                labelsConfig.overalScores[i].position,
-                labelsConfig.overalScores[i].alignment
-                );   
-        }
+        const left = this._players[0]?.overallScore ?? 0;
+        const right = this._players[1]?.overallScore ?? 0;
+        Canvas2D.drawText(`${left}`, 'bold 20px Impact', '#dfe8df', new Vector2(24, hudBarHeight - 4), 'left');
+        Canvas2D.drawText(`${right}`, 'bold 20px Impact', '#dfe8df', new Vector2(gameSize.x - 24, hudBarHeight - 4), 'right');
+    }
+
+    private drawCuePlacementIndicator(): void {
+        const color = this._cuePlacementIsValid ? '#3dde7f' : '#ff4a4a';
+        const renderPosition = new Vector2(this._cueBall.position.x, this._cueBall.position.y + GameConfig.physicsWorldYOffset);
+        Canvas2D.drawCircle(renderPosition, ballConfig.diameter * 0.62, color, false, 3);
+    }
+
+    private drawHudBackdrop(): void {
+        Canvas2D.drawRect(Vector2.zero, new Vector2(gameSize.x, hudBarHeight), 'rgba(8, 12, 10, 0.35)', true);
+        Canvas2D.drawLine(new Vector2(0, hudBarHeight), new Vector2(gameSize.x, hudBarHeight), 'rgba(220, 230, 220)', 1);
     }
 
     private isInsideTableBoundaries(position: Vector2): boolean {
@@ -980,6 +1467,8 @@ export class GameWorld {
 
     public placeBallInHand(position: Vector2): void {
         this._cueBall.position = position;
+        this._cueBall.velocity = Vector2.zero;
+        this._cueBall.show(position); // Ensure cue ball is visible after placement
         this._turnState.ballInHand = false;
         this._stickFollowsCueBall = true;
         this._stick.show(this._cueBall.position);
@@ -997,12 +1486,16 @@ export class GameWorld {
         this._turnState.isValid = this._referee.isValidTurn(this.currentPlayer, this._turnState);
     }
 
-    public shootCueBall(power: number, rotation: number): void {
+    public shootCueBall(power: number, rotation: number, clearPendingServerState: boolean = true): void {
         if(power > 0) {
             this._stick.rotation = rotation;
             this._stick.shoot();
             this._stick.movable = false;
             this._stickFollowsCueBall = false;
+            if (clearPendingServerState) {
+                this._pendingServerBalls = null;
+                this._pendingServerSerial = -1;
+            }
             this.startShotPlayback(rotation, power);
             setTimeout(() => this._stick.hide(), GameConfig.timeoutToHideStickAfterShot);
         }
@@ -1010,22 +1503,31 @@ export class GameWorld {
 
     public update(): void {
 
-        if(this.isBallInHand) {
+        const inBallInHand = this.isBallInHand;
+        if (!inBallInHand) {
+            this._ballInHandResetApplied = false;
+        }
+
+        if(inBallInHand) {
             this.handleBallInHand();
             return;
         }
 
         this.updateShotPlayback();
+        const nowMs = performance.now();
+        const playbackLocked = nowMs < this._shotPlaybackLockUntilMs;
         const hasActivePlayback = this._shotPlaybackFrames !== null;
         let appliedAuthoritativeThisFrame = false;
 
-        if (!hasActivePlayback && this._pendingServerBalls !== null) {
+        if (!hasActivePlayback && !playbackLocked && this._pendingServerBalls !== null) {
+            this.verifyBallSync(this._pendingServerBalls);
             this.applyAuthoritativeBallsState(this._pendingServerBalls);
             if (this._pendingServerSerial > this._lastAppliedShotSerial) {
                 this._lastAppliedShotSerial = this._pendingServerSerial;
             }
             this._pendingServerBalls = null;
             this._pendingServerSerial = -1;
+            this._shotPlaybackLockUntilMs = 0;
             appliedAuthoritativeThisFrame = true;
         }
 
@@ -1041,7 +1543,7 @@ export class GameWorld {
             this._stick.position = this._cueBall.position;
         }
         this._stick.update();
-        this.sendAimUpdate(performance.now());
+        this.sendAimUpdate(nowMs);
         this.handleInput();
 
         if(!this.isBallsMoving && !this._stick.visible) {
@@ -1052,12 +1554,23 @@ export class GameWorld {
     }
 
     public draw(): void {
-        Canvas2D.drawImage(Assets.getSprite(sprites.paths.table), Vector2.zero, 0, Vector2.zero, gameSize);
+        // Render cue guides and cue placement indicator at max FPS for smooth visuals
+        // (these don't affect physics, only visual feedback)
+        
+        // Draw table texture at natural sim world size (1500×750), positioned below HUD bar
+        const tableSprite = Assets.getSprite(sprites.paths.table);
+        if (tableSprite) {
+            Canvas2D.drawImage(tableSprite, new Vector2(0, GameConfig.physicsWorldYOffset), 0, Vector2.zero, { x: 1500, y: 750 });
+        }
+        this._balls.forEach((ball: Ball) => ball.draw());
+        if (this.isBallInHand && this.isLocalPlayersTurn()) {
+            this.drawCuePlacementIndicator();
+        }
+        this.drawCueGuides();
+        this._stick.draw();
+        this.drawHudBackdrop();
         this.drawCurrentPlayerLabel();
         this.drawMatchScores();
         this.drawOverallScores();
-        this._balls.forEach((ball: Ball) => ball.draw());
-        this.drawCueGuides();
-        this._stick.draw();
     }
 }

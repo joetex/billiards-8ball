@@ -191,6 +191,7 @@ function applyShotResult(gs, shooterId, angleUint, powerUint, result) {
     gs.state("shotPower", powerUint);
 
     gs.state("balls", result.balls);
+    gs.state("shotResultBalls", cloneBalls(result.balls));
     gs.state("foul", foul);
     gs.state("winnerId", winnerId);
     gs.state("shotInProgress", false);
@@ -241,6 +242,7 @@ function applyShotResult(gs, shooterId, angleUint, powerUint, result) {
 export function onNewGame(_action) {
     const gs = game();
     gs.state("balls", createInitialBalls());
+    gs.state("shotResultBalls", []);
     gs.state("shotSerial", 0);
     gs.state("foul", false);
     gs.state("winnerId", -1);
@@ -269,6 +271,7 @@ export function onGameStart(_action) {
     if (!Array.isArray(gs.state("balls")) || gs.state("balls").length === 0) {
         gs.state("balls", createInitialBalls());
     }
+    if (!Array.isArray(gs.state("shotResultBalls"))) gs.state("shotResultBalls", []);
     if (typeof gs.state("shotSerial") !== "number") gs.state("shotSerial", 0);
     if (typeof gs.state("foul") !== "boolean") gs.state("foul", false);
     if (typeof gs.state("winnerId") !== "number") gs.state("winnerId", -1);
@@ -364,6 +367,11 @@ export function onAim(action) {
         return;
     }
 
+    if (gs.state("shotInProgress") === true || gs.state("cueBallInHand") === true) {
+        ACOSServer.ignore();
+        return;
+    }
+
     const angleUint = encodeAngleToUint(decodeAngleFromUint(angleUintRaw));
     gs.state("cueAngle", angleUint);
 }
@@ -429,7 +437,13 @@ export function onShoot(action) {
     gs.state("cueBallPlacement", {});
 
     const currentBalls = Array.isArray(gs.state("balls")) ? gs.state("balls") : createInitialBalls();
-    const result = simulateShot(currentBalls, angle, power);
+    const shotSerial = typeof gs.state("shotSerial") === "number" ? gs.state("shotSerial") : 0;
+    const isBreakShot = shotSerial === 0;
+    const result = isBreakShot
+        ? simulateShot(currentBalls, angle, power)
+        : simulateShot(currentBalls, angle, power, {
+            maxSteps: 1800,
+        });
     applyShotResult(gs, playerId, angleUint, powerUint, result);
 }
 
@@ -459,7 +473,8 @@ export function onCueMove(action) {
         return;
     }
 
-    if (!isCueBallInsideTable(x, y)) {
+    const balls = Array.isArray(gs.state("balls")) ? gs.state("balls") : createInitialBalls();
+    if (!isValidCueBallPlacement(balls, x, y)) {
         return;
     }
 

@@ -1,6 +1,6 @@
 {
-  "_esm-CCC6it3b.js": {
-    "file": "assets/esm-CCC6it3b.js",
+  "_esm-B2_vwab2.js": {
+    "file": "assets/esm-B2_vwab2.js",
     "name": "esm"
   },
   "game-client/index.ts": {
@@ -9,7 +9,7 @@
     "src": "game-client/index.ts",
     "isEntry": true,
     "imports": [
-      "_esm-CCC6it3b.js"
+      "_esm-B2_vwab2.js"
     ],
     "dynamicImports": [
       "game-client/pool/game.ts"
@@ -19,12 +19,12 @@
     ]
   },
   "game-client/pool/game.ts": {
-    "file": "assets/game-C2ym_-K9.js",
+    "file": "assets/game-CzvU08_z.js",
     "name": "game",
     "src": "game-client/pool/game.ts",
     "isDynamicEntry": true,
     "imports": [
-      "_esm-CCC6it3b.js"
+      "_esm-B2_vwab2.js"
     ]
   }
 }

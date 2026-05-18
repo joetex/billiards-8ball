@@ -130,7 +130,10 @@ export class Stick {
 
         if (Mouse.isDown(inputConfig.mouseShootButton)) {
             this.updatePowerFromDrag();
-        } else {
+            return;
+        }
+
+        if (Mouse.isReleased(inputConfig.mouseShootButton)) {
             this.queueShotIfAny();
         }
     }
@@ -191,7 +194,9 @@ export class Stick {
 
     public draw(): void {
         if(this._visible) {
-            Canvas2D.drawImage(this._sprite, this._position, this._rotation, this._origin);
+            // Apply physics world Y offset to position stick below HUD
+            const drawPosition = new Vector2(this._position.x, this._position.y + GameConfig.physicsWorldYOffset);
+            Canvas2D.drawImage(this._sprite, drawPosition, this._rotation, this._origin);
             this.drawPowerMeter();
         }
     }

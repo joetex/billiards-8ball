@@ -5,5 +5,6 @@ export class ButtonState {
     
     public down = false;
     public pressed = false;
+    public released = false;
       
 }

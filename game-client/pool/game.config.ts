@@ -3,7 +3,9 @@ import { IGameConfig } from './game.config.type';
 
 export const GameConfig : IGameConfig = {
 
-    gameSize: { x: 1500, y: 750 },
+    gameSize: { x: 1500, y: 806 }, // 750 table + 56 HUD bar
+
+    physicsWorldYOffset: 56, // Offset for positioning physics world (1500×750) below HUD bar
 
     soundOn: true,
 
@@ -41,29 +43,29 @@ export const GameConfig : IGameConfig = {
         ]
     },
 
-    redBallsPositions: [
-        { x: 1056, y: 433 },
-        { x: 1090, y: 374 },
-        { x: 1126, y: 393 },
-        { x: 1126, y: 472 },
-        { x: 1162, y: 335 },
-        { x: 1162, y: 374 },
-        { x: 1162, y: 452 },
-    ],
+    // redBallsPositions: [
+    //     { x: 1056, y: 433 },
+    //     { x: 1090, y: 374 },
+    //     { x: 1126, y: 393 },
+    //     { x: 1126, y: 472 },
+    //     { x: 1162, y: 335 },
+    //     { x: 1162, y: 374 },
+    //     { x: 1162, y: 452 },
+    // ],
 
-    yellowBallsPositions: [
-        { x: 1022, y: 413 },
-        { x: 1056, y: 393 },
-        { x: 1090, y: 452 },
-        { x: 1126, y: 354 },
-        { x: 1126, y: 433 },
-        { x: 1162, y: 413 },
-        { x: 1162, y: 491 },
-    ],
+    // yellowBallsPositions: [
+    //     { x: 1022, y: 413 },
+    //     { x: 1056, y: 393 },
+    //     { x: 1090, y: 452 },
+    //     { x: 1126, y: 354 },
+    //     { x: 1126, y: 433 },
+    //     { x: 1162, y: 413 },
+    //     { x: 1162, y: 491 },
+    // ],
 
-    cueBallPosition: { x: 413, y: 413 },
+    cueBallPosition: { x: 413, y: 375 },
 
-    eightBallPosition: { x: 1090, y: 413 },
+    eightBallPosition: { x: 1090, y: 375 },
 
     matchScore: {
         scoresPositions: [
@@ -119,7 +121,7 @@ export const GameConfig : IGameConfig = {
     },
 
     physics: {
-        friction: 0.0038,
+        friction: 0.0068,
         collisionLoss: 0,
         // Velocity-dependent restitution: near-zero at low speed, maxRestitution at high speed
         minRestitution: 0.04,

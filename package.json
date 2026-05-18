@@ -21,7 +21,8 @@
         "@acosgames/framework": "file:../acosgames/framework",
         "@acosgames/simulator": "file:../acosgames/simulator",
         "phaser": "^3.87.0",
-        "propel-js": "^1.0.26"
+        "propel-js": "^1.0.26",
+        "three": "^0.179.1"
     },
     "devDependencies": {
         "@rollup/plugin-json": "^6.1.0",

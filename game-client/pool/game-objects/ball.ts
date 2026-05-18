@@ -29,12 +29,9 @@ export class Ball {
     private _velocity: Vector2 = Vector2.zero;
     private _moving: boolean = false;
     private _visible: boolean = true;
-    private _spinRoll: number = 0;
-    private _spinVelocity = { x: 0, y: 0, z: 0 };
-    private _surfaceOffset: Vector2 = Vector2.zero;
+    private _rotationQuaternion: { x: number; y: number; z: number; w: number } = { x: 0, y: 0, z: 0, w: 1 }; // Ball orientation as quaternion
     private _previousVelocity: Vector2 = Vector2.zero;
     private static readonly _precisionFactor: number = 100_000_000;
-    private static readonly _spinBoost: number = 1.35;
     private _ballNumber: number = 0;
 
     private _lastPosition: Vector2 = Vector2.zero;
@@ -82,6 +79,10 @@ export class Ball {
 
     public get ballNumber(): number {
         return this._ballNumber;
+    }
+
+    public get rotationQuaternion(): { x: number; y: number; z: number; w: number } {
+        return { ...this._rotationQuaternion };
     }
 
     //------Constructor------//
@@ -134,14 +135,6 @@ export class Ball {
         }
     }
 
-    private static wrapOffset(value: number, period: number): number {
-        if (period <= 0) {
-            return 0;
-        }
-        const mod = value % period;
-        return mod < 0 ? mod + period : mod;
-    }
-
     private static quantize(value: number): number {
         return Math.round(value * Ball._precisionFactor) / Ball._precisionFactor;
     }
@@ -153,33 +146,68 @@ export class Ball {
     private updateSpin(): void {
         const radius = ballConfig.diameter / 2;
         const safeRadius = Math.max(radius, 1);
-
-        // --- UV surface scroll (rolling without slip) ---
-        // One full revolution travels 2πr = πD. One tile = D. Ratio = 1/π.
-        this._surfaceOffset.addTo(new Vector2(
-            (-this._velocity.x / Math.PI) * Ball._spinBoost,
-            (-this._velocity.y / Math.PI) * Ball._spinBoost,
-        ));
-        const period = radius * 2;
-        this._surfaceOffset = new Vector2(
-            Ball.wrapOffset(this._surfaceOffset.x, period),
-            Ball.wrapOffset(this._surfaceOffset.y, period),
-        );
-
-        // Capture angular velocity so idle-coasting phase can continue scrolling
-        this._spinVelocity.x = -this._velocity.y / safeRadius;
-        this._spinVelocity.y = this._velocity.x / safeRadius;
-
-        // --- Z spin (in-plane rotation from deflections) ---
-        const prevSpeed = this._previousVelocity.length;
         const speed = this._velocity.length;
-        if (speed > 0.0001 && prevSpeed > 0.0001) {
-            const signedTurn = (this._previousVelocity.x * this._velocity.y - this._previousVelocity.y * this._velocity.x) / (prevSpeed * speed);
-            this._spinVelocity.z = this._spinVelocity.z * 0.84 + signedTurn * (speed / safeRadius) * 0.65 * 0.16 * Ball._spinBoost;
-        }
 
-        this._spinRoll = Ball.quantize(this._spinRoll + this._spinVelocity.z * 0.26 * Ball._spinBoost);
+        if (speed > 0.0001) {
+            // Calculate distance traveled this frame
+            const distance = speed;
+            
+            // Angular rotation for rolling without slipping: angle = distance / radius
+            // Negate to get correct rolling direction
+            const deltaRotation = -distance / safeRadius;
+            
+            // Calculate rotation axis perpendicular to velocity direction (in 3D: -vy, vx, 0)
+            // For velocity (vx, vy), the ball rotates around axis (-vy, vx, 0) normalized
+            const axisX = -this._velocity.y;
+            const axisY = this._velocity.x;
+            const axisZ = 0;
+            const axisLength = Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ);
+            
+            if (axisLength > 0.0001 && Math.abs(deltaRotation) > 0.0001) {
+                // Normalize axis
+                const ax = axisX / axisLength;
+                const ay = axisY / axisLength;
+                const az = axisZ / axisLength;
+                
+                // Create incremental rotation quaternion using axis-angle
+                const halfAngle = deltaRotation / 2;
+                const sinHalf = Math.sin(halfAngle);
+                const cosHalf = Math.cos(halfAngle);
+                
+                const deltaQ = {
+                    x: ax * sinHalf,
+                    y: ay * sinHalf,
+                    z: az * sinHalf,
+                    w: cosHalf
+                };
+                
+                // Multiply current quaternion by delta (q_new = delta * q_current)
+                // This applies the new rotation to the existing orientation
+                const qx = deltaQ.w * this._rotationQuaternion.x + deltaQ.x * this._rotationQuaternion.w + 
+                           deltaQ.y * this._rotationQuaternion.z - deltaQ.z * this._rotationQuaternion.y;
+                const qy = deltaQ.w * this._rotationQuaternion.y - deltaQ.x * this._rotationQuaternion.z + 
+                           deltaQ.y * this._rotationQuaternion.w + deltaQ.z * this._rotationQuaternion.x;
+                const qz = deltaQ.w * this._rotationQuaternion.z + deltaQ.x * this._rotationQuaternion.y - 
+                           deltaQ.y * this._rotationQuaternion.x + deltaQ.z * this._rotationQuaternion.w;
+                const qw = deltaQ.w * this._rotationQuaternion.w - deltaQ.x * this._rotationQuaternion.x - 
+                           deltaQ.y * this._rotationQuaternion.y - deltaQ.z * this._rotationQuaternion.z;
+                
+                // Normalize to prevent drift
+                const qLength = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+                if (qLength > 0.0001) {
+                    this._rotationQuaternion.x = qx / qLength;
+                    this._rotationQuaternion.y = qy / qLength;
+                    this._rotationQuaternion.z = qz / qLength;
+                    this._rotationQuaternion.w = qw / qLength;
+                }
+            }
+        }
+        
         this._previousVelocity = Vector2.copy(this._velocity);
+    }
+
+    private resetRotation(): void {
+        this._rotationQuaternion = { x: 0, y: 0, z: 0, w: 1 };
     }
 
     //------Public Methods------//
@@ -194,9 +222,7 @@ export class Ball {
         this._position = position;
         this._velocity = Vector2.zero;
         this._visible = true;
-        this._spinVelocity = { x: 0, y: 0, z: 0 };
-        this._surfaceOffset = Vector2.zero;
-        this._spinRoll = 0;
+        this.resetRotation();
         this._previousVelocity = Vector2.zero;
     }
 
@@ -204,8 +230,7 @@ export class Ball {
         this._velocity = Vector2.zero;
         this._moving = false;
         this._visible = false;
-        this._spinVelocity = { x: 0, y: 0, z: 0 };
-        this._surfaceOffset = Vector2.zero;
+        this.resetRotation();
         this._previousVelocity = Vector2.zero;
     }
 
@@ -214,6 +239,11 @@ export class Ball {
         if (this._velocity.length >= ballConfig.minVelocityLength) {
             this.updateSpin();
         }
+    }
+
+    public applyTangentialContactImpulse(contactTangent: Vector2, impulseMagnitude: number): void {
+        void contactTangent;
+        void impulseMagnitude;
     }
 
     public update(): void {
@@ -226,41 +256,22 @@ export class Ball {
                 this.velocity = Vector2.zero;
                 this._moving = false;
             }
-        } else {
-            const spinMagnitude = Math.abs(this._spinVelocity.x) + Math.abs(this._spinVelocity.y) + Math.abs(this._spinVelocity.z);
-            if (spinMagnitude > 0.001) {
-                const idleSpinDecay = 1 - Math.min(0.03, physicsConfig.friction * 2.2);
-                const idleRollDecay = 1 - Math.min(0.022, physicsConfig.friction * 1.8);
-                this._spinVelocity.x *= idleSpinDecay;
-                this._spinVelocity.y *= idleSpinDecay;
-                this._spinVelocity.z *= idleRollDecay;
-
-                const radius = ballConfig.diameter / 2;
-                const period = radius * 2;
-                // idle coasting: spinVelocity = omega = v/r, textureDriftScale = r/π → offset = v/π ✓
-                const textureDriftScale = (radius / Math.PI) * Ball._spinBoost;
-                this._surfaceOffset.addTo(new Vector2(-this._spinVelocity.y * textureDriftScale, this._spinVelocity.x * textureDriftScale));
-                this._surfaceOffset = new Vector2(
-                    Ball.wrapOffset(this._surfaceOffset.x, period),
-                    Ball.wrapOffset(this._surfaceOffset.y, period),
-                );
-                this._spinRoll = Ball.quantize(this._spinRoll + this._spinVelocity.z * 0.2 * Ball._spinBoost);
-            }
         }
     }
 
     public draw(): void {
         if(this._visible){
+            // Apply physics world Y offset to position table below HUD
+            const drawPosition = new Vector2(this._position.x, this._position.y + GameConfig.physicsWorldYOffset);
             Canvas2D.drawTexturedSphere(
                 this._sphereTexture,
-                this._position,
+                drawPosition,
                 ballConfig.diameter / 2,
-                this._spinRoll,
-                this._surfaceOffset,
+                this._rotationQuaternion,
                 // Ball._shadowTexture || undefined,
                 // Ball._lightTexture || undefined,
             );
-            Canvas2D.drawCircle(this._position, ballConfig.diameter / 2, 'rgba(255,255,255,0.45)', false, 1);
+            // Canvas2D.drawCircle(this._position, ballConfig.diameter / 2, 'rgba(255,255,255,0.45)', false, 1);
             // if (this._ballNumber > 0) {
             //     const fontSize = Math.max(8, Math.round(ballConfig.diameter * 0.48));
             //     Canvas2D.drawText(

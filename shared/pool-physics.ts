@@ -26,6 +26,11 @@ export type SimShotResult = {
     objectBallRailHits: number;
 };
 
+export type SimShotOptions = {
+    maxSteps?: number;
+    maxRuntimeMs?: number;
+};
+
 export type SimFrame = Array<{ id: number; number: number; type: BallType; x: number; y: number; vx: number; vy: number; visible: boolean }>;
 
 export const ANGLE_UINT_MAX = 16000;
@@ -54,35 +59,42 @@ export const BALL = {
 } as const;
 
 export const PHYSICS = {
-    friction: 0.0038,
+    friction: 0.0068,
     maxSimSteps: 8000,
     ballRestitution: 0.9,
     wallRestitution: 0.75,
     wallThickness: 200,
 } as const;
 
+function nowMs(): number {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+        return performance.now();
+    }
+    return Date.now();
+}
+
 export const RED_BALLS_POSITIONS = [
-    { x: 1056, y: 433 },
-    { x: 1090, y: 374 },
-    { x: 1126, y: 393 },
-    { x: 1126, y: 472 },
-    { x: 1162, y: 335 },
-    { x: 1162, y: 374 },
-    { x: 1162, y: 452 },
+    { x: 1056, y: 395 },
+    { x: 1090, y: 336 },
+    { x: 1126, y: 355 },
+    { x: 1126, y: 434 },
+    { x: 1162, y: 297 },
+    { x: 1162, y: 336 },
+    { x: 1162, y: 414 },
 ] as const;
 
 export const YELLOW_BALLS_POSITIONS = [
-    { x: 1022, y: 413 },
-    { x: 1056, y: 393 },
-    { x: 1090, y: 452 },
-    { x: 1126, y: 354 },
-    { x: 1126, y: 433 },
-    { x: 1162, y: 413 },
-    { x: 1162, y: 491 },
+    { x: 1022, y: 375 },
+    { x: 1056, y: 355 },
+    { x: 1090, y: 414 },
+    { x: 1126, y: 316 },
+    { x: 1126, y: 395 },
+    { x: 1162, y: 375 },
+    { x: 1162, y: 453 },
 ] as const;
 
-export const EIGHT_BALL_POSITION = { x: 1090, y: 413 } as const;
-export const CUE_BALL_POSITION = { x: 413, y: 413 } as const;
+export const EIGHT_BALL_POSITION = { x: 1090, y: 375 } as const;
+export const CUE_BALL_POSITION = { x: 413, y: 375 } as const;
 
 const TWO_PI = Math.PI * 2;
 
@@ -204,7 +216,7 @@ function buildSimWorld(balls: SimBallState[]) {
     return { world, bodyMap, bodyIdToIndex };
 }
 
-export function simulateShot(initialBalls: SimBallState[], angle: number, power: number): SimShotResult {
+export function simulateShot(initialBalls: SimBallState[], angle: number, power: number, options?: SimShotOptions): SimShotResult {
     const balls = cloneBalls(initialBalls);
     const result: Omit<SimShotResult, "balls"> = {
         firstHitType: null,
@@ -231,12 +243,18 @@ export function simulateShot(initialBalls: SimBallState[], angle: number, power:
     const { world, bodyMap, bodyIdToIndex } = buildSimWorld(balls);
     const frictionFactor = 1 - PHYSICS.friction;
     const minVel = BALL.minVelocityLength;
+    const maxSteps = Number.isFinite(options?.maxSteps) ? Math.max(1, Math.floor(options!.maxSteps as number)) : PHYSICS.maxSimSteps;
+    const maxRuntimeMs = Number.isFinite(options?.maxRuntimeMs) ? Math.max(1, Math.floor(options!.maxRuntimeMs as number)) : 0;
+    const startMs = maxRuntimeMs > 0 ? nowMs() : 0;
     const pocketed = new Set<number>();
     const pocketedPos = new Map<number, { x: number; y: number }>();
     const pocketedMap: Record<number, true> = {};
     const objectBallRailHitIndexes = new Set<number>();
 
-    for (let step = 0; step < PHYSICS.maxSimSteps; step++) {
+    for (let step = 0; step < maxSteps; step++) {
+        if (maxRuntimeMs > 0 && (step & 15) === 0 && nowMs() - startMs >= maxRuntimeMs) {
+            break;
+        }
         const collisions = p.worldStep(1, world);
 
         if (!result.firstHitType) {

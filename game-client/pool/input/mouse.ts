@@ -45,6 +45,7 @@ class Mouse_Singleton {
 
     private handleMouseUp(event: MouseEvent) {
         this._buttonStates[event.button].down = false;
+        this._buttonStates[event.button].released = true;
     }
 
     //------Public Methods------//
@@ -52,6 +53,7 @@ class Mouse_Singleton {
     public reset() : void {
         for(let i = 0 ; i < 3 ; i++ ) {
             this._buttonStates[i].pressed = false;
+            this._buttonStates[i].released = false;
         }
     }
 
@@ -61,6 +63,10 @@ class Mouse_Singleton {
     
     public isPressed(button: number): boolean {
         return this._buttonStates[button].pressed;
+    }
+
+    public isReleased(button: number): boolean {
+        return this._buttonStates[button].released;
     }
 }
 

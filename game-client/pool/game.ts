@@ -56,10 +56,14 @@ export class Game {
         return new Promise((resolve) => {
             this._isLoading = true;
             Canvas2D.clear();
-            Canvas2D.drawImage(
-                Assets.getSprite(sprites.paths.controls),
-                GameConfig.loadingScreenImagePosition
+            const controlsSprite = Assets.getSprite(sprites.paths.controls);
+            if (controlsSprite) {
+                Canvas2D.drawImage(
+                    controlsSprite,
+                    GameConfig.loadingScreenImagePosition
                 );
+            }
+            Canvas2D.endFrame();
             setTimeout(() => {
                 this._isLoading = false;
                 resolve();
@@ -90,6 +94,7 @@ export class Game {
         if(AI.finishedSession){
             Canvas2D.clear();
             this._menu.active ? this._menu.draw() : this._poolGame.draw();
+            Canvas2D.endFrame();
         }
     }
 
@@ -121,8 +126,10 @@ export class Game {
     //------Public Methods------//
 
     public async init(): Promise<void> {
+        Canvas2D.showLoadingOverlay('Loading pool assets...');
         await Assets.loadGameAssets();
         await Assets.preloadTextures(BALL_TEXTURE_PATHS);
+        Canvas2D.hideLoadingOverlay();
 
         this.initMenuActions();
         this.initMainMenu();

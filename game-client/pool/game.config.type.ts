@@ -2,6 +2,7 @@ import { MenuActionType } from './menu/menu-action-type';
 
 export interface IGameConfig {
     gameSize:                     IVector2;
+    physicsWorldYOffset:          number;
     soundOn:                      boolean;
     timeoutToHideStickAfterShot:  number;
     timeoutToHideBallAfterPocket: number;
@@ -9,8 +10,8 @@ export interface IGameConfig {
     timeoutToLoadSubMenu:         number;
     loadingScreenImagePosition:   IVector2;
     labels:                       ILabelsConfig;
-    redBallsPositions:            IVector2[];
-    yellowBallsPositions:         IVector2[];
+    // redBallsPositions:            IVector2[];
+    // yellowBallsPositions:         IVector2[];
     cueBallPosition:              IVector2;
     eightBallPosition:            IVector2;
     matchScore:                   IMatchScoreConfig;

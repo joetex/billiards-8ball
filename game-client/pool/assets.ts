@@ -1,5 +1,6 @@
 import { GameConfig } from './game.config';
 import { IAssetsConfig } from './game.config.type';
+import { audioManager } from './audio-manager';
 
 //------Configurations------//
 
@@ -11,13 +12,29 @@ class Assets_Singleton {
     //------Members------//
 
     _sprites: Map<string, HTMLImageElement>;
-    _sounds: Map<string, HTMLAudioElement>;
 
     //------Constructor------//
 
     constructor() {
         this._sprites = new Map<string, HTMLImageElement>();
-        this._sounds = new Map<string, HTMLAudioElement>();
+        // Initialize audio context on first user interaction
+        this.setupAudioContextInitialization();
+    }
+
+    private setupAudioContextInitialization(): void {
+        // Initialize audio context on first user interaction (required by browsers)
+        const initAudio = () => {
+            if (!audioManager.isInitialized()) {
+                audioManager.initContext();
+            }
+            document.removeEventListener('click', initAudio);
+            document.removeEventListener('keydown', initAudio);
+            document.removeEventListener('touchstart', initAudio);
+        };
+
+        document.addEventListener('click', initAudio, { once: true });
+        document.addEventListener('keydown', initAudio, { once: true });
+        document.addEventListener('touchstart', initAudio, { once: true });
     }
 
     //------Private Methods------//
@@ -39,19 +56,19 @@ class Assets_Singleton {
     }
 
     private loadSound(path: string): Promise<void> {
-        const audio: HTMLAudioElement = new Audio(sounds.basePath + path);
-        this._sounds.set(path, audio);
-        audio.load();
-
-        return new Promise(resolve => {
-            audio.onloadeddata = () => resolve();
-        });
+        return audioManager.loadSound(path, sounds.basePath);
     }
 
     private async loadGameSounds(): Promise<void> {
         const loadPromises = Object.values(sounds.paths).map(this.loadSound.bind(this));
         
         await Promise.all(loadPromises);
+        
+        // Try to initialize audio context after loading sounds
+        // If no user interaction yet, sounds will remain in pendingSounds queue
+        if (!audioManager.isInitialized()) {
+            audioManager.initContext();
+        }
     }
 
     //------Public Methods------//
@@ -61,20 +78,13 @@ class Assets_Singleton {
         await this.loadGameSprites();
     }
 
-    public getSprite(key: string): HTMLImageElement {
+    public getSprite(key: string): HTMLImageElement | undefined {
         return this._sprites.get(key);
-    }
-
-    public getSound(key: string): HTMLAudioElement {
-        return this._sounds.get(key);
     }
 
     public playSound(key: string, volume: number): void {
         if(GameConfig.soundOn) {
-            const sound = this.getSound(key);
-            if(!sound) return;
-            sound.volume = volume;
-            sound.play().catch(() => { /* NotAllowedError before user interaction — safe to ignore */ });
+            audioManager.playSound(key, volume);
         }
     }
 

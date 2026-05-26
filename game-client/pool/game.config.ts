@@ -1,15 +1,15 @@
 import { MenuActionType } from './menu/menu-action-type';
 import { IGameConfig } from './game.config.type';
 
-export const GameConfig : IGameConfig = {
+export const GameConfig: IGameConfig = {
 
-    gameSize: { x: 1500, y: 806 }, // 750 table + 56 HUD bar
+    gameSize: { x: 1500, y: 844 }, // 750 table + 94 bottom bar (16:9 aspect ratio)
 
-    physicsWorldYOffset: 56, // Offset for positioning physics world (1500×750) below HUD bar
+    physicsWorldYOffset: 0, // Offset for positioning physics world (1500×750) below HUD bar
 
     soundOn: true,
 
-    timeoutToHideStickAfterShot: 2000,
+    timeoutToHideStickAfterShot: 500,
 
     timeoutToHideBallAfterPocket: 100,
 
@@ -21,7 +21,7 @@ export const GameConfig : IGameConfig = {
 
     labels: {
         currentPlayer: {
-            position: { x: 640, y: 260},
+            position: { x: 640, y: 260 },
             color: '#126736',
             font: '70px Impact',
             alignment: 'start',
@@ -78,34 +78,44 @@ export const GameConfig : IGameConfig = {
     sprites: {
         basePath: 'assets/sprites/',
         paths: {
-            menuBackground : 'main_menu_background.png',
-            table : 'spr_background4.png',
-            cueBall : 'spr_ball2.png',
-            redBall : 'spr_redBall2.png',
-            yellowBall : 'spr_yellowBall2.png',
-            blackBall : 'spr_blackBall2.png',
-            stick : 'spr_stick.png',
-            twoPlayersButton : '2_players_button.png',
-            twoPlayersButtonHovered : '2_players_button_hover.png',
-            onePlayerButton : '1_player_button.png',
-            onePlayerButtonHovered : '1_player_button_hover.png',
-            muteButton : 'mute_button.png',
-            muteButtonHovered : 'mute_button_hover.png',
-            muteButtonPressed : 'mute_button_pressed.png',
-            muteButtonPressedHovered : 'mute_button_pressed_hover.png',
-            easyButton : 'easy_button.png',
-            easyButtonHovered : 'easy_button_hover.png',
-            mediumButton : 'medium_button.png',
-            mediumButtonHovered : 'medium_button_hover.png',
-            hardButton : 'hard_button.png',
-            hardButtonHovered : 'hard_button_hover.png',
-            backButton : 'back_button.png',
-            backButtonHovered : 'back_button_hover.png',
-            continueButton : 'continue_button.png',
-            continueButtonHovered : 'continue_button_hover.png',
-            insaneButton : 'insane_button.png',
-            insaneButtonHovered : 'insane_button_hover.png',
-            controls : 'controls.png',
+            menuBackground: 'main_menu_background.png',
+            table: '../table/parts/table-complete-gray-blue3.webp',
+            tableCloth: '../table/parts/table-cloth-blue.webp',
+            tableCorners: '../table/parts/table-corners-gray.webp',
+            cushionLong: '../table/parts/cushion-long-gray-blue.webp',
+            wallCushionSmall: '../table/parts/wall-cushion-small-gray-blue.webp',
+            holeTopLeft: '../table/parts/hole-topleft.webp',
+            holeTopMiddle: '../table/parts/hole-topmiddle.webp',
+            holeTopRight: '../table/parts/hole-topright.webp',
+            holeBottomLeft: '../table/parts/hole-bottomleft.webp',
+            holeBottomMiddle: '../table/parts/hole-bottommiddle.webp',
+            holeBottomRight: '../table/parts/hole-bottomright.webp',
+            cueBall: 'spr_ball2.png',
+            redBall: 'spr_redBall2.png',
+            yellowBall: 'spr_yellowBall2.png',
+            blackBall: 'spr_blackBall2.png',
+            stick: 'spr_stick.png',
+            twoPlayersButton: '2_players_button.png',
+            twoPlayersButtonHovered: '2_players_button_hover.png',
+            onePlayerButton: '1_player_button.png',
+            onePlayerButtonHovered: '1_player_button_hover.png',
+            muteButton: 'mute_button.png',
+            muteButtonHovered: 'mute_button_hover.png',
+            muteButtonPressed: 'mute_button_pressed.png',
+            muteButtonPressedHovered: 'mute_button_pressed_hover.png',
+            easyButton: 'easy_button.png',
+            easyButtonHovered: 'easy_button_hover.png',
+            mediumButton: 'medium_button.png',
+            mediumButtonHovered: 'medium_button_hover.png',
+            hardButton: 'hard_button.png',
+            hardButtonHovered: 'hard_button_hover.png',
+            backButton: 'back_button.png',
+            backButtonHovered: 'back_button_hover.png',
+            continueButton: 'continue_button.png',
+            continueButtonHovered: 'continue_button_hover.png',
+            insaneButton: 'insane_button.png',
+            insaneButtonHovered: 'insane_button_hover.png',
+            controls: 'controls.png',
             redScore: 'red_score.png',
             yellowScore: 'yellow_score.png'
         }
@@ -121,18 +131,19 @@ export const GameConfig : IGameConfig = {
     },
 
     physics: {
-        friction: 0.0068,
+        friction: 0.01,
         collisionLoss: 0,
         // Velocity-dependent restitution: near-zero at low speed, maxRestitution at high speed
         minRestitution: 0.04,
-        maxRestitution: 0.78,
+        maxRestitution: 0.9,
         restitutionSpeedLow: 0.5,   // px/step — below this, minimum bounce
-        restitutionSpeedHigh: 12.0, // px/step — above this, maximum bounce
+        restitutionSpeedHigh: 12.0,
     },
 
     table: {
         cushionWidth: 57,
-        pocketRadius: 48,
+        cornerPocketRadius: 48,
+        middlePocketRadius: 45,
         pocketsPositions: [
             { x: 62, y: 62 },
             { x: 750, y: 32 },
@@ -144,19 +155,19 @@ export const GameConfig : IGameConfig = {
     },
 
     ball: {
-        diameter: 37,
+        diameter: 42,
         origin: { x: 25, y: 25 },
         minVelocityLength: 0.02,
         maxExpectedVelocity: 120,
-        maxExpectedCollisionForce: 70
+        maxExpectedCollisionForce: 120
     },
 
     stick: {
         origin: { x: 970, y: 11 },
         shotOrigin: { x: 950, y: 11 },
-        powerToAddPerFrame: 1,
-        movementPerFrame: 10,
-        maxPower: 40
+        powerToAddPerFrame: 2,
+        movementPerFrame: 0.1,
+        maxPower: 800
     },
 
     input: {
@@ -168,8 +179,8 @@ export const GameConfig : IGameConfig = {
         toggleMenuKey: 27
     },
 
-    mainMenu : {
-        
+    mainMenu: {
+
         labels: [
             {
                 text: 'Classic 8-Ball',
@@ -188,30 +199,30 @@ export const GameConfig : IGameConfig = {
         ],
 
         buttons: [
-            { 
+            {
                 action: MenuActionType.PVP,
                 position: { x: 200, y: 200 },
-                sprite: 'twoPlayersButton', 
-                spriteOnHover: 'twoPlayersButtonHovered', 
+                sprite: 'twoPlayersButton',
+                spriteOnHover: 'twoPlayersButtonHovered',
             },
-            { 
+            {
                 action: MenuActionType.GoToSubMenu,
                 value: 0,
                 position: { x: 200, y: 400 },
-                sprite: 'onePlayerButton', 
-                spriteOnHover: 'onePlayerButtonHovered', 
+                sprite: 'onePlayerButton',
+                spriteOnHover: 'onePlayerButtonHovered',
             },
-            { 
+            {
                 action: MenuActionType.ToggleSound,
                 position: { x: 1430, y: 10 },
-                sprite: 'muteButton', 
-                spriteOnHover: 'muteButtonHovered', 
+                sprite: 'muteButton',
+                spriteOnHover: 'muteButtonHovered',
             },
         ],
 
         subMenus: [
             {
-                
+
                 labels: [
                     {
                         text: 'Choose Difficulty',
@@ -233,8 +244,8 @@ export const GameConfig : IGameConfig = {
                     {
                         action: MenuActionType.GoToPreviousMenu,
                         position: { x: 100, y: 150 },
-                        sprite: 'backButton', 
-                        spriteOnHover: 'backButtonHovered', 
+                        sprite: 'backButton',
+                        spriteOnHover: 'backButtonHovered',
                     },
                     {
                         action: MenuActionType.PVC,
@@ -264,11 +275,11 @@ export const GameConfig : IGameConfig = {
                         sprite: 'insaneButton',
                         spriteOnHover: 'insaneButtonHovered'
                     },
-                    { 
+                    {
                         action: MenuActionType.ToggleSound,
                         position: { x: 1430, y: 10 },
-                        sprite: 'muteButton', 
-                        spriteOnHover: 'muteButtonHovered', 
+                        sprite: 'muteButton',
+                        spriteOnHover: 'muteButtonHovered',
                     },
                 ],
 
@@ -276,7 +287,7 @@ export const GameConfig : IGameConfig = {
             }
         ]
     },
-    
+
     cursor: {
         default: 'default',
         button: 'pointer'
@@ -286,7 +297,7 @@ export const GameConfig : IGameConfig = {
         on: true,
         trainIterations: 30,
         playerIndex: 1,
-        ballDistanceBonus: 1/5800,
+        ballDistanceBonus: 1 / 5800,
         validTurnBonus: 5000,
         pocketedBallBonus: 2000,
         invalidTurnPenalty: 3000,

@@ -4,6 +4,8 @@ import { Canvas2D } from '../canvas';
 import { Assets } from '../assets';
 import { Color } from '../common/color';
 import { Vector2 } from '../geom/vector2';
+import * as THREE from 'three';
+import { lerp, type PhysicsDynamicBody } from '../pool-physics';
 
 const cueBallTextureUrl = 'assets/balls/ball.cue.webp';
 const pool1TextureUrl = 'assets/balls/ball.pool1.webp';
@@ -29,12 +31,19 @@ export class Ball {
     private _velocity: Vector2 = Vector2.zero;
     private _moving: boolean = false;
     private _visible: boolean = true;
-    private _rotationQuaternion: { x: number; y: number; z: number; w: number } = { x: 0, y: 0, z: 0, w: 1 }; // Ball orientation as quaternion
+    private _rotationQuaternion: THREE.Quaternion = new THREE.Quaternion(0, 0, 0, 1); // Ball orientation as quaternion
     private _previousVelocity: Vector2 = Vector2.zero;
-    private static readonly _precisionFactor: number = 100_000_000;
+    private _lastSpinUpdateMs: number = performance.now();
     private _ballNumber: number = 0;
 
+    private _dynBody: PhysicsDynamicBody | null = null;
+    public group: 'solid' | 'stripe' | null = null;
+
     private _lastPosition: Vector2 = Vector2.zero;
+    private _lastRenderPosition: Vector2 = Vector2.zero;
+    private _prevPhysicsPos: { x: number; y: number } = { x: 0, y: 0 };
+
+    private _isCueMove: boolean = false;
 
     //------Properties------//
 
@@ -42,12 +51,15 @@ export class Ball {
         return Vector2.copy(this._lastPosition);
     }
     public get position(): Vector2 {
+        if (this._dynBody) {
+            return new Vector2(this._dynBody.center.x, this._dynBody.center.y);
+        }
         return Vector2.copy(this._position);
     }
 
     public set position(value: Vector2) {
         this._lastPosition = Vector2.copy(this._position);
-        this._position = Ball.quantizeVector(value);
+        this._position = value;
     }
 
     public get nextPosition(): Vector2 {
@@ -56,16 +68,21 @@ export class Ball {
     }
 
     public get velocity(): Vector2 {
+        if (this._dynBody) {
+            return new Vector2(this._dynBody.velocity.x, this._dynBody.velocity.y);
+        }
         return Vector2.copy(this._velocity);
     }
 
     public set velocity(value: Vector2) {
-        const quantized = Ball.quantizeVector(value);
-        this._moving = quantized.length > 0 ? true : false;
-        this._velocity = quantized;
+        this._moving = value.length > 0;
+        this._velocity = value;
     }
 
     public get moving(): boolean {
+        if (this._dynBody) {
+            return Math.hypot(this._dynBody.velocity.x, this._dynBody.velocity.y) >= ballConfig.minVelocityLength;
+        }
         return this._moving;
     }
 
@@ -74,6 +91,10 @@ export class Ball {
     }
 
     public get visible(): boolean {
+        if (this._isCueMove) return true; // ball is always visible while being placed
+        if (this._dynBody) {
+            return this._dynBody.enabled;
+        }
         return this._visible;
     }
 
@@ -81,8 +102,12 @@ export class Ball {
         return this._ballNumber;
     }
 
-    public get rotationQuaternion(): { x: number; y: number; z: number; w: number } {
-        return { ...this._rotationQuaternion };
+    public get rotationQuaternion(): THREE.Quaternion {
+        return this._rotationQuaternion.clone();
+    }
+    
+    public get dynBody(): PhysicsDynamicBody | null {
+        return this._dynBody;
     }
 
     //------Constructor------//
@@ -91,6 +116,7 @@ export class Ball {
         this._color = color;
         this._ballNumber = ballNumber ?? 0;
         this._sphereTexture = this.resolveSphereTexture(color, textureUrl);
+        this._lastPosition = Vector2.copy(this._position);
         if (!Ball._shadowTexture) {
             Ball._shadowTexture = Ball.getCachedTexture(sphereShadowUrl);
         }
@@ -135,109 +161,154 @@ export class Ball {
         }
     }
 
-    private static quantize(value: number): number {
-        return Math.round(value * Ball._precisionFactor) / Ball._precisionFactor;
-    }
-
-    private static quantizeVector(value: Vector2): Vector2 {
-        return new Vector2(Ball.quantize(value.x), Ball.quantize(value.y));
-    }
-
     private updateSpin(): void {
-        const radius = ballConfig.diameter / 2;
-        const safeRadius = Math.max(radius, 1);
-        const speed = this._velocity.length;
+        const nowMs = performance.now();
+        const deltaSeconds = Math.max(0, Math.min(0.05, (nowMs - this._lastSpinUpdateMs) / 500));
+        this._lastSpinUpdateMs = nowMs;
 
-        if (speed > 0.0001) {
-            // Calculate distance traveled this frame
-            const distance = speed;
-            
-            // Angular rotation for rolling without slipping: angle = distance / radius
-            // Negate to get correct rolling direction
-            const deltaRotation = -distance / safeRadius;
-            
-            // Calculate rotation axis perpendicular to velocity direction (in 3D: -vy, vx, 0)
-            // For velocity (vx, vy), the ball rotates around axis (-vy, vx, 0) normalized
-            const axisX = -this._velocity.y;
-            const axisY = this._velocity.x;
-            const axisZ = 0;
-            const axisLength = Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ);
-            
-            if (axisLength > 0.0001 && Math.abs(deltaRotation) > 0.0001) {
-                // Normalize axis
-                const ax = axisX / axisLength;
-                const ay = axisY / axisLength;
-                const az = axisZ / axisLength;
-                
-                // Create incremental rotation quaternion using axis-angle
-                const halfAngle = deltaRotation / 2;
-                const sinHalf = Math.sin(halfAngle);
-                const cosHalf = Math.cos(halfAngle);
-                
-                const deltaQ = {
-                    x: ax * sinHalf,
-                    y: ay * sinHalf,
-                    z: az * sinHalf,
-                    w: cosHalf
-                };
-                
-                // Multiply current quaternion by delta (q_new = delta * q_current)
-                // This applies the new rotation to the existing orientation
-                const qx = deltaQ.w * this._rotationQuaternion.x + deltaQ.x * this._rotationQuaternion.w + 
-                           deltaQ.y * this._rotationQuaternion.z - deltaQ.z * this._rotationQuaternion.y;
-                const qy = deltaQ.w * this._rotationQuaternion.y - deltaQ.x * this._rotationQuaternion.z + 
-                           deltaQ.y * this._rotationQuaternion.w + deltaQ.z * this._rotationQuaternion.x;
-                const qz = deltaQ.w * this._rotationQuaternion.z + deltaQ.x * this._rotationQuaternion.y - 
-                           deltaQ.y * this._rotationQuaternion.x + deltaQ.z * this._rotationQuaternion.w;
-                const qw = deltaQ.w * this._rotationQuaternion.w - deltaQ.x * this._rotationQuaternion.x - 
-                           deltaQ.y * this._rotationQuaternion.y - deltaQ.z * this._rotationQuaternion.z;
-                
-                // Normalize to prevent drift
-                const qLength = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
-                if (qLength > 0.0001) {
-                    this._rotationQuaternion.x = qx / qLength;
-                    this._rotationQuaternion.y = qy / qLength;
-                    this._rotationQuaternion.z = qz / qLength;
-                    this._rotationQuaternion.w = qw / qLength;
-                }
-            }
+        if (deltaSeconds <= 0) {
+            return;
         }
-        
-        this._previousVelocity = Vector2.copy(this._velocity);
+
+        const velocity = this._dynBody
+            ? new Vector2(this._dynBody.velocity.x, this._dynBody.velocity.y)
+            : this._velocity;
+        const speed = velocity.length;
+        if (speed <= 0.00001) {
+            return;
+        }
+
+        const radius = Math.max(ballConfig.diameter / 2, 1);
+        // Rolling without slipping in THREE.js world (Y-up) with canvas-space velocity (Y-down):
+        //   v_world = (vx_c, -vy_c, 0),  r_contact = (0, 0, -r)
+        //   ω × r_contact = -v_world  →  ωx = vy_c/r,  ωy = vx_c/r
+        // So the rotation axis is (vy_canvas, vx_canvas, 0)/|v| — NOT the cross product.
+        const rotationAxis = new THREE.Vector3(velocity.y / speed, velocity.x / speed, 0);
+
+        // Rolling without slipping: angular speed = linear speed / radius.
+        const angle = (speed * deltaSeconds) / radius;
+        const deltaQuaternion = new THREE.Quaternion();
+        deltaQuaternion.setFromAxisAngle(rotationAxis, angle);
+        this._rotationQuaternion.multiplyQuaternions(deltaQuaternion, this._rotationQuaternion);
+
+        this._previousVelocity = Vector2.copy(velocity);
     }
 
     private resetRotation(): void {
-        this._rotationQuaternion = { x: 0, y: 0, z: 0, w: 1 };
+        this._rotationQuaternion.identity();// = { x: 0, y: 0, z: 0, w: 1 };
+    }
+
+    /**
+     * Link this render ball to a physics body during simulation.
+     * Pass null to hide the ball (e.g. it was already pocketed before this shot).
+     */
+    public linkBody(body: PhysicsDynamicBody | null): void {
+        if (body) {
+            this._dynBody = body;
+            this._visible = true;
+            this._lastPosition = new Vector2(body.center.x, body.center.y);
+            this._prevPhysicsPos.x = body.center.x;
+            this._prevPhysicsPos.y = body.center.y;
+        } else {
+            this._dynBody = null;
+            this._visible = false;
+        }
+    }
+
+    /** Snapshot current physics position as the interpolation baseline. Call once per fixed physics step, before stepping. */
+    public snapshotPhysicsPosition(): void {
+        if (this._dynBody && this._dynBody.enabled) {
+            this._prevPhysicsPos.x = this._dynBody.center.x;
+            this._prevPhysicsPos.y = this._dynBody.center.y;
+        }
     }
 
     //------Public Methods------//
 
     public shoot(power: number, angle: number): void {
-        this._velocity = Ball.quantizeVector(new Vector2(power * Math.cos(angle), power * Math.sin(angle)));
+        this._velocity = new Vector2(power * Math.cos(angle), power * Math.sin(angle));
         this._previousVelocity = Vector2.copy(this._velocity);
         this._moving = true;
     }
 
     public show(position: Vector2): void {
         this._position = position;
+        this._lastPosition = Vector2.copy(position);
+        this._lastSpinUpdateMs = performance.now();
         this._velocity = Vector2.zero;
         this._visible = true;
         this.resetRotation();
         this._previousVelocity = Vector2.zero;
+
+        if (this._dynBody) {
+            this._dynBody.enabled = true;
+            this._dynBody.body.setEnabled(true);
+            this._dynBody.collider.setEnabled(true);
+            this._dynBody.body.setTranslation({ x: position.x, y: position.y }, true);
+            this._dynBody.body.setLinvel({ x: 0, y: 0 }, true);
+            this._dynBody.center.x = position.x;
+            this._dynBody.center.y = position.y;
+            // Sync the interpolation baseline so that lerp(prev, center, alpha) returns
+            // exactly `position` at any alpha value — prevents jumping when show() is
+            // called outside active simulation (e.g. remote observer cue-move updates).
+            this._prevPhysicsPos.x = position.x;
+            this._prevPhysicsPos.y = position.y;
+            this._dynBody.velocity.x = 0;
+            this._dynBody.velocity.y = 0;
+            this._dynBody.velMag = 0;
+        }
+        this._isCueMove = false;
+    }
+
+    public cueMove(position: Vector2): void {
+        this._isCueMove = true;
+        this._position = position;
+        this._lastPosition = Vector2.copy(position);
+        // Keep the body cache in sync so that once _isCueMove is cleared (on cuePlace),
+        // the physics lerp anchors are already at the placed position and the ball stays
+        // put instead of snapping back to the physics-end position.
+        if (this._dynBody) {
+            this._dynBody.center.x = position.x;
+            this._dynBody.center.y = position.y;
+            this._prevPhysicsPos.x = position.x;
+            this._prevPhysicsPos.y = position.y;
+        }
+    }
+
+    public cuePlace(position: Vector2): void {
+        this._isCueMove = false;
+        // this._position = position;
+        // this._lastPosition = Vector2.copy(position);
     }
 
     public hide(): void {
+        this._lastSpinUpdateMs = performance.now();
         this._velocity = Vector2.zero;
         this._moving = false;
         this._visible = false;
         this.resetRotation();
         this._previousVelocity = Vector2.zero;
+
+        if (this._dynBody) {
+            this._dynBody.enabled = false;
+            this._dynBody.body.setLinvel({ x: 0, y: 0 }, true);
+            this._dynBody.body.setEnabled(false);
+            this._dynBody.collider.setEnabled(false);
+            this._dynBody.center.x = 9999;
+            this._dynBody.center.y = 9999;
+            this._dynBody.velocity.x = 0;
+            this._dynBody.velocity.y = 0;
+            this._dynBody.velMag = 0;
+        }
     }
 
     /** Called externally (e.g. during shot playback) to advance spin without moving the ball. */
     public tickSpin(): void {
-        if (this._velocity.length >= ballConfig.minVelocityLength) {
-            this.updateSpin();
+        const sourceVelocity = this._dynBody
+            ? new Vector2(this._dynBody.velocity.x, this._dynBody.velocity.y)
+            : this._velocity;
+        if (sourceVelocity.length >= ballConfig.minVelocityLength) {
+            // this.updateSpin();
         }
     }
 
@@ -247,10 +318,11 @@ export class Ball {
     }
 
     public update(): void {
+        if (this._dynBody) return; // position & velocity driven by simulation body; spin updated in draw()
         if(this._moving) {
-            this._velocity = Ball.quantizeVector(this._velocity.mult(1 - physicsConfig.friction));
-            this._position = Ball.quantizeVector(this._position.add(this._velocity));
-            this.updateSpin();
+            this._velocity = this._velocity.mult(1 - physicsConfig.friction);
+            this._position = this._position.add(this._velocity);
+            // this.updateSpin();
 
             if(this._velocity.length < ballConfig.minVelocityLength) {
                 this.velocity = Vector2.zero;
@@ -259,30 +331,35 @@ export class Ball {
         }
     }
 
-    public draw(): void {
-        if(this._visible){
-            // Apply physics world Y offset to position table below HUD
-            const drawPosition = new Vector2(this._position.x, this._position.y + GameConfig.physicsWorldYOffset);
-            Canvas2D.drawTexturedSphere(
-                this._sphereTexture,
-                drawPosition,
-                ballConfig.diameter / 2,
-                this._rotationQuaternion,
-                // Ball._shadowTexture || undefined,
-                // Ball._lightTexture || undefined,
-            );
-            // Canvas2D.drawCircle(this._position, ballConfig.diameter / 2, 'rgba(255,255,255,0.45)', false, 1);
-            // if (this._ballNumber > 0) {
-            //     const fontSize = Math.max(8, Math.round(ballConfig.diameter * 0.48));
-            //     Canvas2D.drawText(
-            //         this._ballNumber.toString(),
-            //         `bold ${fontSize}px Arial`,
-            //         '#ffffff',
-            //         { x: this._position.x, y: this._position.y + fontSize * 0.35 },
-            //         'center',
-            //         'alphabetic',
-            //     );
-            // }
+    public draw(alpha: number = 1): void {
+        if (!this.visible) return;
+        let px: number;
+        let py: number;
+        if (this._dynBody && !this._isCueMove) {
+            // Interpolate between the position at the start of the last physics step (prev)
+            // and the position at the end of it (curr), using alpha = accumulator / fixedStepMs.
+            // This keeps rendering smooth at any display refresh rate regardless of physics FPS.
+            // Skip this path during cue-move: alpha oscillates 0→1 each physics step, which
+            // would cause the ball to jump between _prevPhysicsPos and _dynBody.center.
+            px = lerp(this._prevPhysicsPos.x, this._dynBody.center.x, alpha);
+            py = lerp(this._prevPhysicsPos.y, this._dynBody.center.y, alpha);
+            this.updateSpin();
+        } else {
+            // Non-physics path: smooth visual follow toward _position.
+            // Used during cue-move (mouse placement) and when no physics body is linked.
+            const lerpFactor = 0.25;
+            px = lerp(this._lastRenderPosition.x, this._position.x, lerpFactor);
+            py = lerp(this._lastRenderPosition.y, this._position.y, lerpFactor);
         }
+        this._lastRenderPosition.x = px;
+        this._lastRenderPosition.y = py;
+        Canvas2D.drawTexturedSphere(
+            this._sphereTexture,
+            new Vector2(px, py + GameConfig.physicsWorldYOffset),
+            ballConfig.diameter / 2,
+            this._rotationQuaternion,
+            Ball._shadowTexture || undefined,
+            Ball._lightTexture || undefined,
+        );
     }
 }

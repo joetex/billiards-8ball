@@ -8,6 +8,7 @@ export class AudioManager {
     private audioBuffers: Map<string, AudioBuffer> = new Map();
     private masterGain: GainNode | null = null;
     private pendingSounds: Array<{ path: string; basePath: string }> = [];
+    private masterVolume: number = 1.0; // Store master volume even before context init
 
     /**
      * Initialize Web Audio context (must be called after user interaction)
@@ -18,9 +19,12 @@ export class AudioManager {
         try {
             const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
             this.context = new AudioContextClass();
+            
+            if (!this.context) return; // Type guard
+            
             this.masterGain = this.context.createGain();
             this.masterGain.connect(this.context.destination);
-            this.masterGain.gain.value = 1.0;
+            this.masterGain.gain.value = this.masterVolume; // Apply stored master volume
             
             // Load any pending sounds that were deferred
             if (this.pendingSounds.length > 0) {
@@ -139,8 +143,9 @@ export class AudioManager {
      * Set master volume (0.0 to 1.0)
      */
     public setMasterVolume(volume: number): void {
+        this.masterVolume = Math.max(0, Math.min(1, volume));
         if (this.masterGain) {
-            this.masterGain.gain.value = Math.max(0, Math.min(1, volume));
+            this.masterGain.gain.value = this.masterVolume;
         }
     }
 
@@ -148,7 +153,7 @@ export class AudioManager {
      * Get master volume
      */
     public getMasterVolume(): number {
-        return this.masterGain?.gain.value ?? 1.0;
+        return this.masterVolume;
     }
 
     /**

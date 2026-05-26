@@ -1,23 +1,37 @@
 {
     "state": {
         "balls": {
-            "$array": {
+            "$static": {
                 "id": "uint",
                 "number": "uint",
+                "x": "float",
+                "y": "float",
+                "vx": "float",
+                "vy": "float",
+                "visible": "boolean",
+                "pocketed": "boolean",
                 "type": {
-                    "$enum": ["solid", "stripe", "eight", "cue"]
-                },
-                "x": "any",
-                "y": "any",
-                "vx": "any",
-                "vy": "any",
-                "visible": "any"
+                    "$enum": ["cue", "solid", "striped", "eight"]
+                }
             }
         },
+        "rackSeed": "uint",
         "shotSerial": "uint",
         "foul": "any",
         "winnerId": "int",
         "shotInProgress": "any",
+        "shotResultsPending": "any",
+        "shotResultsSerial": "int",
+        "_shotResults": {
+            "hash64": "any",
+            "pocketedNumbers": "any",
+            "firstHitType": "any",
+            "firstHitNumber": "any",
+            "cuePocketed": "any",
+            "eightPocketed": "any",
+            "railHit": "any",
+            "objectBallRailHits": "any"
+        },
         "cueBallInHand": "any",
         "cueAngle": "uint",
         "cuePower": "uint",
@@ -25,34 +39,52 @@
         "shotAngle": "uint",
         "shotPower": "uint",
         "cueBallPlacement": {
-            "x": "any",
-            "y": "any",
-            "by": "any",
-            "placed": "any",
-            "updatedAt": "any"
+            "x": "float",
+            "y": "float",
+            "by": "uint",
+            "placed": "boolean",
+            "updatedAt": "uint"
         }
     },
     "players": {
-        "attr": {
-            "collectedBalls": {
-                "$array": "uint"
-            },
-            "group": {
-                "$enum": ["solid", "stripe", null]
-            }
-        }
+        "collectedBalls": {
+            "$static": "uint"
+        },
+        "group": "string"
     },
     "room": {
         "next_action": {
-            "$enum": ["shoot", "pick"]
+            "$enum": [
+                "shoot",
+                "pick",
+                "cue-move",
+                "shoot-result"
+            ]
         },
-        "next_player": "int",
         "events": {
             "$array": {
-                "type": {
-                    "$enum": ["newround"]
-                },
-                "payload": "any"
+                "$variants": {
+                    "cue-move": {
+                        "x": "float",
+                        "y": "float"
+                    },
+                    "cue-place": {
+                        "x": "float",
+                        "y": "float"
+                    },
+                    "shoot": {
+                        "angle": "uint",
+                        "power": "uint"
+                    },
+                    "aim": {
+                        "angle": "uint",
+                        "power": "uint"
+                    },
+                    "shoot-result": {
+                    },
+                    "shot-mismatch": {
+                    }
+                }
             }
         }
     }

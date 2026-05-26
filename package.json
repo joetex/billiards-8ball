@@ -20,8 +20,9 @@
     "dependencies": {
         "@acosgames/framework": "file:../acosgames/framework",
         "@acosgames/simulator": "file:../acosgames/simulator",
+        "@dimforge/rapier2d": "^0.19.3",
+        "@dimforge/rapier2d-compat": "^0.19.3",
         "phaser": "^3.87.0",
-        "propel-js": "^1.0.26",
         "three": "^0.179.1"
     },
     "devDependencies": {
@@ -30,6 +31,7 @@
         "@rollup/plugin-terser": "^1.0.0",
         "@rollup/plugin-typescript": "^12.1.2",
         "@types/node": "^24.10.1",
+        "@types/three": "^0.184.1",
         "concurrently": "^9.2.1",
         "rollup": "^4.60.1",
         "tslib": "^2.8.1",

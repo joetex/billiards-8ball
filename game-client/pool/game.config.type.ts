@@ -1,30 +1,30 @@
 import { MenuActionType } from './menu/menu-action-type';
 
 export interface IGameConfig {
-    gameSize:                     IVector2;
-    physicsWorldYOffset:          number;
-    soundOn:                      boolean;
-    timeoutToHideStickAfterShot:  number;
+    gameSize: IVector2;
+    physicsWorldYOffset: number;
+    soundOn: boolean;
+    timeoutToHideStickAfterShot: number;
     timeoutToHideBallAfterPocket: number;
-    loadingScreenTimeout:         number;
-    timeoutToLoadSubMenu:         number;
-    loadingScreenImagePosition:   IVector2;
-    labels:                       ILabelsConfig;
+    loadingScreenTimeout: number;
+    timeoutToLoadSubMenu: number;
+    loadingScreenImagePosition: IVector2;
+    labels: ILabelsConfig;
     // redBallsPositions:            IVector2[];
     // yellowBallsPositions:         IVector2[];
-    cueBallPosition:              IVector2;
-    eightBallPosition:            IVector2;
-    matchScore:                   IMatchScoreConfig;
-    sprites:                      IAssetsConfig;
-    sounds:                       IAssetsConfig;
-    physics:                      IPhysicsConfig;
-    table:                        ITableConfig;
-    ball:                         IBallConfig;
-    stick:                        IStickConfig;
-    input:                        IInputConfig;
-    mainMenu:                     IMenuConfig;
-    cursor:                       ICursorConfig;
-    ai:                           IAIConfig;
+    cueBallPosition: IVector2;
+    eightBallPosition: IVector2;
+    matchScore: IMatchScoreConfig;
+    sprites: IAssetsConfig;
+    sounds: IAssetsConfig;
+    physics: IPhysicsConfig;
+    table: ITableConfig;
+    ball: IBallConfig;
+    stick: IStickConfig;
+    input: IInputConfig;
+    mainMenu: IMenuConfig;
+    cursor: ICursorConfig;
+    ai: IAIConfig;
 }
 
 export interface IVector2 {
@@ -34,95 +34,96 @@ export interface IVector2 {
 
 export interface ILabelsConfig {
     currentPlayer: ILabel;
-    overalScores:  ILabel[];
+    overalScores: ILabel[];
 }
 
 export interface IMatchScoreConfig {
     scoresPositions: IVector2[];
-    unitMargin:      number;
+    unitMargin: number;
 }
 
 export interface IAssetsConfig {
     basePath: string;
-    paths:    { [key: string]: string };
+    paths: { [key: string]: string };
 }
 
 export interface IPhysicsConfig {
-    friction:             number;
-    collisionLoss:        number;
-    minRestitution:       number;
-    maxRestitution:       number;
-    restitutionSpeedLow:  number;
+    friction: number;
+    collisionLoss: number;
+    minRestitution: number;
+    maxRestitution: number;
+    restitutionSpeedLow: number;
     restitutionSpeedHigh: number;
 }
 
 export interface ITableConfig {
-    cushionWidth:     number,
-    pocketRadius:     number,
+    cushionWidth: number,
+    cornerPocketRadius: number,
+    middlePocketRadius: number,
     pocketsPositions: IVector2[]
 }
 
 export interface IBallConfig {
-    diameter:                  number;
-    origin:                    IVector2;
-    minVelocityLength:         number;
-    maxExpectedVelocity:       number;
+    diameter: number;
+    origin: IVector2;
+    minVelocityLength: number;
+    maxExpectedVelocity: number;
     maxExpectedCollisionForce: number;
 }
 
 export interface IStickConfig {
-    origin:             IVector2,
-    shotOrigin:         IVector2,
+    origin: IVector2,
+    shotOrigin: IVector2,
     powerToAddPerFrame: number,
-    movementPerFrame:   number,
-    maxPower:           number
+    movementPerFrame: number,
+    maxPower: number
 }
 
 export interface IInputConfig {
-    mouseSelectButton:    number;
-    mouseShootButton:     number;
+    mouseSelectButton: number;
+    mouseShootButton: number;
     mousePlaceBallButton: number;
     increaseShotPowerKey: number;
     decreaseShotPowerKey: number;
-    toggleMenuKey:        number;
+    toggleMenuKey: number;
 }
 
 export interface IMenuConfig {
-    labels:   ILabel[];
-    buttons:  IButton[];
+    labels: ILabel[];
+    buttons: IButton[];
     subMenus: IMenuConfig[];
 }
 
 export interface IButton {
-    action:        MenuActionType;
-    position:      IVector2;
-    sprite:        string;
+    action: MenuActionType;
+    position: IVector2;
+    sprite: string;
     spriteOnHover: string;
-    value?:        number;
+    value?: number;
 }
 
 export interface ILabel {
-    position:  IVector2;
-    font:      string;
-    color:     string;
+    position: IVector2;
+    font: string;
+    color: string;
     alignment: string;
-    text?:     string;
+    text?: string;
 }
 
 export interface ICursorConfig {
     default: string,
-    button:  string,
+    button: string,
 }
 export interface IAIConfig {
-    on:                        boolean;
-    trainIterations:           number;
-    playerIndex:               number;
-    ballDistanceBonus:         number;
-    validTurnBonus:            number;
-    pocketedBallBonus:         number;
-    invalidTurnPenalty:        number;
-    gameWonBonus:              number;
-    gameLossPenalty:           number;
+    on: boolean;
+    trainIterations: number;
+    playerIndex: number;
+    ballDistanceBonus: number;
+    validTurnBonus: number;
+    pocketedBallBonus: number;
+    invalidTurnPenalty: number;
+    gameWonBonus: number;
+    gameLossPenalty: number;
     shotPowerMutationVariance: number;
-    minShotPower:              number;
+    minShotPower: number;
 }

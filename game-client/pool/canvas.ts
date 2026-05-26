@@ -8,8 +8,10 @@ class Canvas2D_Singleton {
     //------Members------//
 
     private _canvasContainer: HTMLElement;
-    private _canvas : HTMLCanvasElement;
+    private _canvas: HTMLCanvasElement;
     private _renderer: THREE.WebGLRenderer;
+    private _debugCanvas: HTMLCanvasElement;
+    private _debugCtx: CanvasRenderingContext2D;
     private _scene: THREE.Scene;
     private _camera: THREE.OrthographicCamera;
     private _staticLight: THREE.AmbientLight;
@@ -21,12 +23,18 @@ class Canvas2D_Singleton {
     private _frameGeometries: THREE.BufferGeometry[] = [];
     private _frameTextures: THREE.Texture[] = [];
     private _renderOrderCounter: number = 0;
+
+    // Persistent caches — never disposed, reused every frame.
+    private _sphereGeomCache: Map<number, THREE.SphereGeometry> = new Map();
+    private _sphereMatCache: Map<string, THREE.ShaderMaterial> = new Map();
+    private _shadowGeomCache: Map<number, THREE.CircleGeometry> = new Map();
+    private _shadowMat: THREE.ShaderMaterial | null = null;
     private _loadingOverlay: HTMLElement | null = null;
     private _scale!: Vector2;
     private _offset!: Vector2;
 
     //------Properties------//
-    
+
     public get scaleX() {
         return this._scale.x;
     }
@@ -45,7 +53,7 @@ class Canvas2D_Singleton {
 
     //------Constructor------//
 
-    constructor(canvas : HTMLCanvasElement, canvasContainer: HTMLElement) {
+    constructor(canvas: HTMLCanvasElement, canvasContainer: HTMLElement) {
         this._canvasContainer = canvasContainer;
         this._canvas = canvas;
         this._scene = new THREE.Scene();
@@ -63,10 +71,22 @@ class Canvas2D_Singleton {
         this._renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         this._renderer.autoClear = true;
 
+        this._canvasContainer.style.position = 'relative';
+        this._debugCanvas = document.createElement('canvas');
+        this._debugCanvas.style.position = 'absolute';
+        this._debugCanvas.style.left = '0';
+        this._debugCanvas.style.top = '0';
+        this._debugCanvas.style.pointerEvents = 'none';
+        this._debugCanvas.style.zIndex = '20';
+        this._canvasContainer.appendChild(this._debugCanvas);
+        this._debugCtx = this._debugCanvas.getContext('2d') as CanvasRenderingContext2D;
+
         this._unitPlane = new THREE.PlaneGeometry(1, 1);
         this._staticLight = new THREE.AmbientLight(0xffffff, 1.0);
-        this._directionalLight = new THREE.DirectionalLight(0xffffff, 2);
+        this._directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
         this._directionalLight.position.set(-0.35, 0.65, 1.0);
+        this._directionalLight.rotateX(-Math.PI / 4);
+        // this._directionalLight.castShadow = true;
         this._scene.add(this._staticLight);
         this._scene.add(this._directionalLight);
 
@@ -154,14 +174,11 @@ class Canvas2D_Singleton {
 
         let newWidth: number;
         let newHeight: number;
-        if (hostRatio > targetRatio) {
-            newHeight = hostHeight;
-            newWidth = Math.floor(hostHeight * targetRatio);
-        } else {
-            newWidth = hostWidth;
-            newHeight = Math.floor(hostWidth / targetRatio);
-        }
-        
+        // Always fill host height so there are no letterbox bars top/bottom.
+        // Any slight horizontal overflow is clipped by #root overflow:hidden.
+        newHeight = hostHeight;
+        newWidth = Math.round(hostHeight * targetRatio);
+
         this._canvasContainer.style.width = newWidth + 'px';
         this._canvasContainer.style.height = newHeight + 'px';
         this._scale = new Vector2(newWidth / originalCanvasWidth, newHeight / originalCanvasHeight);
@@ -169,12 +186,17 @@ class Canvas2D_Singleton {
         this._renderer.setSize(newWidth, newHeight, false);
         this._renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
+        this._debugCanvas.width = newWidth;
+        this._debugCanvas.height = newHeight;
+        this._debugCanvas.style.width = newWidth + 'px';
+        this._debugCanvas.style.height = newHeight + 'px';
+
         const rect = this._canvas.getBoundingClientRect();
         this._offset = new Vector2(rect.left + window.scrollX, rect.top + window.scrollY);
     }
 
 
-    public clear() : void {
+    public clear(): void {
         for (let i = 0; i < this._frameObjects.length; i++) {
             this._scene.remove(this._frameObjects[i]);
         }
@@ -195,16 +217,35 @@ class Canvas2D_Singleton {
         }
         this._frameTextures = [];
 
+        this._debugCtx.clearRect(0, 0, this._debugCanvas.width, this._debugCanvas.height);
+
         this._renderOrderCounter = 0;
     }
 
+    public drawNativeCircle(position: IVector2, radius: number, color: string, filled: boolean = false, width: number = 1): void {
+        const x = position.x * this._scale.x;
+        const y = position.y * this._scale.y;
+        const scaledRadius = radius * this._scale.x;
+
+        this._debugCtx.beginPath();
+        this._debugCtx.arc(x, y, scaledRadius, 0, Math.PI * 2);
+        this._debugCtx.lineWidth = width;
+        this._debugCtx.strokeStyle = color;
+        this._debugCtx.fillStyle = color;
+        if (filled) {
+            this._debugCtx.fill();
+        } else {
+            this._debugCtx.stroke();
+        }
+    }
+
     public drawImage(
-            sprite: HTMLImageElement,
-            position: IVector2 = { x: 0, y: 0 }, 
-            rotation: number = 0, 
-            origin: IVector2 = { x: 0, y: 0 },
-            size?: IVector2
-        ) {
+        sprite: HTMLImageElement,
+        position: IVector2 = { x: 0, y: 0 },
+        rotation: number = 0,
+        origin: IVector2 = { x: 0, y: 0 },
+        size?: IVector2
+    ) {
         const texture = this.getTextureForImage(sprite);
         if (!texture) {
             return;
@@ -237,7 +278,7 @@ class Canvas2D_Singleton {
     }
 
 
-    public drawText(text: string, font:string, color: string, position: IVector2, textAlign: string = 'left', textBaseline: string = 'alphabetic'): void {
+    public drawText(text: string, font: string, color: string, position: IVector2, textAlign: string = 'left', textBaseline: string = 'alphabetic'): void {
         if (!text) {
             return;
         }
@@ -328,7 +369,7 @@ class Canvas2D_Singleton {
         } else {
             const curve = new THREE.EllipseCurve(0, 0, radius, radius, 0, Math.PI * 2, false, 0);
             const points2D = curve.getPoints(40);
-            const points3D = points2D.map((p) => new THREE.Vector3(p.x, p.y, 0));
+            const points3D = points2D.map((p: { x: number; y: number }) => new THREE.Vector3(p.x, p.y, 0));
             const geometry = new THREE.BufferGeometry().setFromPoints(points3D);
             const material = new THREE.LineBasicMaterial({ color, linewidth: width, transparent: true, depthTest: false, depthWrite: false });
             const lineLoop = new THREE.LineLoop(geometry, material);
@@ -338,6 +379,19 @@ class Canvas2D_Singleton {
             this.registerFrameMaterial(material);
             this.registerFrameObject(lineLoop);
         }
+    }
+
+    public drawRing(position: IVector2, innerRadius: number, outerRadius: number, color: string, opacity: number = 1): void {
+        const worldX = this.toWorldX(position.x);
+        const worldY = this.toWorldY(position.y);
+        const geometry = new THREE.RingGeometry(innerRadius, outerRadius, 48);
+        const { color: baseColor } = this.parseColor(color);
+        const material = new THREE.MeshBasicMaterial({ color: baseColor, transparent: true, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(worldX, worldY, 0);
+        this.registerFrameGeometry(geometry);
+        this.registerFrameMaterial(material);
+        this.registerFrameObject(mesh);
     }
 
     public drawRect(position: IVector2, size: IVector2, color: string, filled: boolean = true, width: number = 1): void {
@@ -375,7 +429,7 @@ class Canvas2D_Singleton {
         texture: HTMLImageElement,
         position: IVector2,
         radius: number,
-        rotationQuaternion: { x: number; y: number; z: number; w: number },
+        rotationQuaternion: THREE.Quaternion | null = null,
         shadow?: HTMLImageElement,
         highlight?: HTMLImageElement
     ): void {
@@ -384,48 +438,119 @@ class Canvas2D_Singleton {
             return;
         }
 
-        const map = baseTexture.clone();
-        map.needsUpdate = true;
-        map.wrapS = THREE.ClampToEdgeWrapping;
-        map.wrapT = THREE.ClampToEdgeWrapping;
-
-        const geometry = new THREE.SphereGeometry(radius, 24, 24);
-        const material = new THREE.MeshPhongMaterial({ map, transparent: true, emissiveIntensity: 1, shininess: 80 });
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.set(this.toWorldX(position.x), this.toWorldY(position.y), 0.2);
-        
-        // Apply rotation using quaternion for proper angular momentum
-        mesh.quaternion.set(
-            rotationQuaternion.x,
-            rotationQuaternion.y,
-            rotationQuaternion.z,
-            rotationQuaternion.w
-        );
-
-        this.registerFrameTexture(map);
-        this.registerFrameGeometry(geometry);
-        this.registerFrameMaterial(material);
-        this.registerFrameObject(mesh);
-
-        if (shadow && shadow.complete && shadow.naturalWidth > 0) {
-            const shadowTex = this.getTextureForImage(shadow);
-            if (shadowTex) {
-                const shadowMat = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, opacity: 0.2, depthTest: false, depthWrite: false });
-                const shadowMesh = new THREE.Mesh(this._unitPlane, shadowMat);
-                shadowMesh.scale.set(radius * 2.1, radius * 2.1, 1);
-                shadowMesh.position.set(this.toWorldX(position.x), this.toWorldY(position.y), -0.1);
-                this.registerFrameMaterial(shadowMat);
-                this.registerFrameObject(shadowMesh);
-            }
+        // ── Geometry cache (keyed by radius×1000 to avoid float key issues) ──────────
+        const radiusKey = Math.round(radius * 1000);
+        let geometry = this._sphereGeomCache.get(radiusKey);
+        if (!geometry) {
+            // 16×16 segments are visually identical to 32×32 at this scale and
+            // have 4× fewer triangles. Geometry is created once and reused forever.
+            geometry = new THREE.SphereGeometry(radius, 16, 16);
+            this._sphereGeomCache.set(radiusKey, geometry);
         }
 
+        // ── Material cache (keyed by texture URL) ────────────────────────────────────
+        const texKey = texture.currentSrc || texture.src || String(radiusKey);
+        let material = this._sphereMatCache.get(texKey);
+        if (!material) {
+            // Shader strings are only compiled by the GPU once per material instance.
+            const vertexShader = /* glsl */`
+                varying vec3 vNormal;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vNormal = normalize(mat3(modelMatrix) * normal);
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `;
+            const fragmentShader = /* glsl */`
+                uniform sampler2D map;
+                uniform vec3 uLightDir;
+                uniform float uAmbient;
+                uniform float uBaseBrightness;
+                varying vec3 vNormal;
+                varying vec2 vUv;
+                void main() {
+                    vec4 texColor = texture2D(map, vUv);
+                    vec3 n = normalize(vNormal);
+                    float diff = dot(n, uLightDir);
+                    float toon = (diff > 0.25) ? 2.00 : (diff > 0.05) ? 1.62 : 1.58;
+                    vec3 viewDir = vec3(0.0, 0.0, 1.0);
+                    float rim = pow(1.0 - max(dot(viewDir, n), 0.0), 2.0) * 2.45;
+                    vec3 lit = (texColor.rgb * uBaseBrightness) * (uAmbient + toon * (1.0 - uAmbient));
+                    lit += vec3(0.15, 0.15, 0.15) * rim;
+                    gl_FragColor = vec4(clamp(lit, 0.0, 1.0), texColor.a);
+                }
+            `;
+            material = new THREE.ShaderMaterial({
+                uniforms: {
+                    map: { value: baseTexture },
+                    uLightDir: { value: new THREE.Vector3(-0.65, 0.65, 1.0).normalize() },
+                    uAmbient: { value: 0.01 },
+                    uBaseBrightness: { value: 0.82 },
+                },
+                vertexShader,
+                fragmentShader,
+                transparent: true,
+            });
+            this._sphereMatCache.set(texKey, material);
+        }
+        // Ensure the uniform always points at the (already-cached, never-reuploaded) texture.
+        material.uniforms.map.value = baseTexture;
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(this.toWorldX(position.x), this.toWorldY(position.y), 0.2);
+        mesh.quaternion.copy(rotationQuaternion
+            ? new THREE.Quaternion(rotationQuaternion.x, rotationQuaternion.y, rotationQuaternion.z, rotationQuaternion.w)
+            : new THREE.Quaternion());
+
+        // Shadow — geometry and material are cached; only position changes per frame.
+        if (shadow && shadow.complete && shadow.naturalWidth > 0) {
+            const shadowRadiusKey = Math.round(radius * 2.2 * 1000);
+            let shadowGeom = this._shadowGeomCache.get(shadowRadiusKey);
+            if (!shadowGeom) {
+                shadowGeom = new THREE.CircleGeometry(radius * 2.2, 24);
+                this._shadowGeomCache.set(shadowRadiusKey, shadowGeom);
+            }
+            if (!this._shadowMat) {
+                this._shadowMat = new THREE.ShaderMaterial({
+                    transparent: true,
+                    depthWrite: false,
+                    uniforms: {
+                        color: { value: new THREE.Color(0x000000) },
+                        opacity: { value: 1.0 },
+                    },
+                    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+                    fragmentShader: `
+                        uniform vec3 color; uniform float opacity; varying vec2 vUv;
+                        void main() {
+                            float dist = length(vUv - 0.5);
+                            float alpha = smoothstep(0.0, 0.3, dist);
+                            gl_FragColor = vec4(color, (1.0 - alpha) * opacity);
+                        }`,
+                });
+            }
+            const shadowMesh = new THREE.Mesh(shadowGeom, this._shadowMat);
+            shadowMesh.position.set(this.toWorldX(position.x) + 5, this.toWorldY(position.y) - 5, 0);
+            // Shadow mesh is scene-managed per frame (add/remove) but geom+mat are not disposed.
+            this.registerFrameObject(shadowMesh);
+        }
+
+        // Sphere mesh is scene-managed per frame; geometry and material are NOT disposed.
+        this.registerFrameObject(mesh);
+
+        // Highlight overlay — AdditiveBlending: black areas add nothing, bright areas add gloss.
         if (highlight && highlight.complete && highlight.naturalWidth > 0) {
             const highlightTex = this.getTextureForImage(highlight);
             if (highlightTex) {
-                const highlightMat = new THREE.MeshBasicMaterial({ map: highlightTex, transparent: true, opacity: 0.5, depthTest: false, depthWrite: false });
+                const highlightMat = new THREE.MeshBasicMaterial({
+                    map: highlightTex,
+                    blending: THREE.AdditiveBlending,
+                    depthTest: false,
+                    depthWrite: false,
+                });
                 const highlightMesh = new THREE.Mesh(this._unitPlane, highlightMat);
-                highlightMesh.scale.set(radius * 2, radius * 2, 1);
-                highlightMesh.position.set(this.toWorldX(position.x), this.toWorldY(position.y), 0.35);
+                highlightMesh.scale.set(radius * 2.0, radius * 2.0, 1);
+                highlightMesh.position.set(this.toWorldX(position.x), this.toWorldY(position.y), 0.4);
                 this.registerFrameMaterial(highlightMat);
                 this.registerFrameObject(highlightMesh);
             }
@@ -470,8 +595,8 @@ class Canvas2D_Singleton {
     }
 }
 
-const canvas : HTMLCanvasElement = document.getElementById('screen') as HTMLCanvasElement;
-const container : HTMLElement = document.getElementById('gameArea') as HTMLElement;
+const canvas: HTMLCanvasElement = document.getElementById('screen') as HTMLCanvasElement;
+const container: HTMLElement = document.getElementById('gameArea') as HTMLElement;
 export const Canvas2D = new Canvas2D_Singleton(canvas, container);
 
 window.addEventListener('resize', Canvas2D.resizeCanvas.bind(Canvas2D));

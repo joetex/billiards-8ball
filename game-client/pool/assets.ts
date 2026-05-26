@@ -78,8 +78,12 @@ class Assets_Singleton {
         await this.loadGameSprites();
     }
 
-    public getSprite(key: string): HTMLImageElement | undefined {
-        return this._sprites.get(key);
+    public getSprite(key: string): HTMLImageElement {
+        const sprite = this._sprites.get(key);
+        if (!sprite) {
+            throw new Error(`[Assets] Sprite not found: ${key}`);
+        }
+        return sprite;
     }
 
     public playSound(key: string, volume: number): void {
@@ -100,6 +104,18 @@ class Assets_Singleton {
 
     public async preloadTextures(paths: string[]): Promise<void> {
         await Promise.all(paths.map(p => this.loadTexture(p)));
+    }
+
+    public setMasterVolume(volume: number): void {
+        audioManager.setMasterVolume(volume);
+    }
+
+    public getMasterVolume(): number {
+        return audioManager.getMasterVolume();
+    }
+
+    public getLoadedSoundCount(): number {
+        return audioManager.getLoadedSoundCount();
     }
 }
 

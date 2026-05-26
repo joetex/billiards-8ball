@@ -14,6 +14,7 @@ import { Keyboard } from './input/keyboard';
 import { Canvas2D } from './canvas';
 import { Mouse } from './input/mouse';
 import { IAssetsConfig, IInputConfig } from './game.config.type';
+import { ensurePhysicsReady } from './pool-physics';
 
 //------Configurations------//
 
@@ -33,9 +34,9 @@ export class Game {
     private _lastFrameTimeMs: number = 0;
     private _accumulatorMs: number = 0;
 
-    private static readonly _fixedStepMs: number = 1000 / 120;
+    private static readonly _fixedStepMs: number = 1000 / 60;
     private static readonly _maxFrameDeltaMs: number = 100;
-    private static readonly _maxSimulationStepsPerFrame: number = 6;
+    private static readonly _maxSimulationStepsPerFrame: number = 4;
 
     //------Private Methods------//
 
@@ -83,17 +84,18 @@ export class Game {
         }
     }
 
-    private fixedUpdate(): void {
+    private fixedUpdate(fixedDeltaMs: number): void {
         if (this._isLoading) return;
         this.handleInput();
-        this._menu.active ? this._menu.update() : this._poolGame.update();
+        this._menu.active ? this._menu.update() : this._poolGame.update(fixedDeltaMs);
     }
 
     private draw(): void {
         if (this._isLoading) return;
         if(AI.finishedSession){
             Canvas2D.clear();
-            this._menu.active ? this._menu.draw() : this._poolGame.draw();
+            const alpha = Math.min(1, this._accumulatorMs / Game._fixedStepMs);
+            this._menu.active ? this._menu.draw() : this._poolGame.draw(alpha);
             Canvas2D.endFrame();
         }
     }
@@ -109,7 +111,7 @@ export class Game {
 
         let steps = 0;
         while (this._accumulatorMs >= Game._fixedStepMs && steps < Game._maxSimulationStepsPerFrame) {
-            this.fixedUpdate();
+            this.fixedUpdate(Game._fixedStepMs);
             this._accumulatorMs -= Game._fixedStepMs;
             steps++;
         }
@@ -129,6 +131,7 @@ export class Game {
         Canvas2D.showLoadingOverlay('Loading pool assets...');
         await Assets.loadGameAssets();
         await Assets.preloadTextures(BALL_TEXTURE_PATHS);
+        await ensurePhysicsReady();
         Canvas2D.hideLoadingOverlay();
 
         this.initMenuActions();

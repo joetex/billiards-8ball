@@ -19,9 +19,17 @@ export class Vector2 implements IVector2 {
     get x() {
         return this._x;
     }
+
+    set x(value: number) {
+        this._x = value;
+    }
     
     get y() {
         return this._y;
+    }
+
+    set y(value: number) {
+        this._y = value;
     }
 
     static get zero() {

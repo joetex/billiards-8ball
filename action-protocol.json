@@ -1,0 +1,36 @@
+{
+    "$variants": {
+        "cue-move": {
+            "x": "float",
+            "y": "float"
+        },
+        "cue-place": {
+            "x": "float",
+            "y": "float"
+        },
+        "shoot": {
+            "angle": "uint",
+            "power": "uint"
+        },
+        "aim": {
+            "angle": "uint",
+            "power": "uint"
+        },
+        "pick": {
+            "ball": "uint"
+        },
+        "shoot-result": {
+            "shotSerial": "uint",
+            "hash64": "string",
+            "pocketedNumbers": {
+                "$array": "uint"
+            },
+            "firstHitType": "string",
+            "firstHitNumber": "uint",
+            "cuePocketed": "bool",
+            "eightPocketed": "bool",
+            "railHit": "bool",
+            "objectBallRailHits": "uint"
+        }
+    }
+}

@@ -131,7 +131,7 @@ export const GameConfig: IGameConfig = {
     },
 
     physics: {
-        friction: 0.01,
+        friction: 0.004,
         collisionLoss: 0,
         // Velocity-dependent restitution: near-zero at low speed, maxRestitution at high speed
         minRestitution: 0.04,

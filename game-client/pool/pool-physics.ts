@@ -363,6 +363,129 @@ export function rayCastCircle(
 
 
 
+export type GuideContactResult = {
+    /** Position of the cue-ball centre at first contact — already radius-offset from walls/balls */
+    centerAtContact: { x: number; y: number };
+    /** Distance from cast origin to contact (world units) */
+    distance: number;
+    /** True when the contacted object is a cushion wall */
+    isWall: boolean;
+    /** Index into LiveSimulation.balls of the struck object ball; null for wall hits */
+    ballIndex: number | null;
+};
+
+/**
+ * Cast the cue ball as a Rapier Ball shape through the live-simulation world and return the
+ * first contact.  Because the shape has the full ball radius, `centerAtContact` is already
+ * correctly offset from walls/other balls — no manual radius correction is needed.
+ *
+ * Solves two guide bugs at once:
+ *   • Wall guide: ghost ball center lands at radius distance from cushion, not on the wall.
+ *   • Ball collision: Rapier's actual collision geometry is used, matching real shot physics.
+ */
+export function castCueBallGuide(
+    sim: LiveSimulation,
+    origin: { x: number; y: number },
+    unitDir: { x: number; y: number },
+    maxDistance: number,
+    excludeBallIndex: number = 0,
+): GuideContactResult | null {
+    const simWorld = sim._simWorld;
+    const dirLen = Math.hypot(unitDir.x, unitDir.y);
+    if (dirLen <= 1e-9 || maxDistance <= 0) return null;
+
+    const ud = dirLen === 1 ? unitDir : { x: unitDir.x / dirLen, y: unitDir.y / dirLen };
+    const shapeVel = { x: ud.x * maxDistance, y: ud.y * maxDistance };
+    const circleShape = new RAPIER.Ball(BALL.radius);
+    const excludeBody = simWorld.bodyMap[excludeBallIndex]?.body;
+
+    const rawHit: any = simWorld.world.castShape(
+        origin,
+        RAPIER.RotationOps.identity(),
+        shapeVel,
+        circleShape,
+        0.0,   // targetDistance — report contact the moment shapes touch
+        1.0,   // maxToi — travel full |shapeVel| = maxDistance before giving up
+        false, // stopAtPenetration — don't abort if cast starts overlapping something
+        undefined,
+        undefined,
+        undefined,
+        excludeBody,
+    );
+
+    if (!rawHit) return null;
+    const toi = Number(rawHit.time_of_impact ?? rawHit.toi ?? rawHit.timeOfImpact);
+    if (!Number.isFinite(toi) || toi < 0) return null;
+
+    const distance = toi * maxDistance;
+    const centerAtContact = { x: origin.x + ud.x * distance, y: origin.y + ud.y * distance };
+
+    const colliderRaw = rawHit.colliderHandle ?? rawHit.collider;
+    const colliderHandle = typeof colliderRaw === 'number'
+        ? colliderRaw
+        : (colliderRaw && typeof colliderRaw.handle === 'number' ? colliderRaw.handle : null);
+
+    const isWall = colliderHandle != null && simWorld.wallColliderHandles.has(colliderHandle);
+    const ballIndex = (!isWall && colliderHandle != null)
+        ? (simWorld.colliderHandleToBallIndex.get(colliderHandle) ?? null)
+        : null;
+
+    return { centerAtContact, distance, isWall, ballIndex };
+}
+
+/**
+ * Analytically cast a ball-radius circle against the raw cushion wall segments.
+ * Each wall segment is contracted inward (toward the table interior) by BALL.radius so that
+ * the returned `centerAtContact` is the ball-centre position at first contact — matching the
+ * offset that `castCueBallGuide` produces for the primary guide.
+ * Used for the secondary cut-angle continuation line.
+ */
+export function findFirstWallHitForBall(
+    origin: { x: number; y: number },
+    unitDir: { x: number; y: number },
+    maxDistance: number,
+): { centerAtContact: { x: number; y: number }; distance: number } | null {
+    const r = BALL.radius;
+    // Approximate table interior centre for choosing the inward-facing normal direction
+    const tcx = 747, tcy = 370;
+    let bestT = Infinity;
+    let bestPos: { x: number; y: number } | null = null;
+
+    for (const line of getCushionLineDefinitions()) {
+        const sdx = line.end.x - line.start.x;
+        const sdy = line.end.y - line.start.y;
+        const sLen = Math.hypot(sdx, sdy);
+        if (sLen < 1e-9) continue;
+
+        // Perpendicular candidates; choose the one pointing toward table interior
+        let nx = -sdy / sLen, ny = sdx / sLen;
+        const midX = (line.start.x + line.end.x) / 2;
+        const midY = (line.start.y + line.end.y) / 2;
+        if (nx * (tcx - midX) + ny * (tcy - midY) < 0) { nx = -nx; ny = -ny; }
+
+        // Offset segment inward by ball radius
+        const ox = line.start.x + nx * r, oy = line.start.y + ny * r;
+        const ex = line.end.x   + nx * r, ey = line.end.y   + ny * r;
+
+        // Ray vs offset segment via Cramer's rule
+        const segDx = ex - ox, segDy = ey - oy;
+        const denom = unitDir.x * segDy - unitDir.y * segDx;
+        if (Math.abs(denom) < 1e-9) continue;
+
+        const aX = ox - origin.x, aY = oy - origin.y;
+        const t = (aX * segDy - aY * segDx) / denom;
+        const u = (aX * unitDir.y - aY * unitDir.x) / denom;
+
+        if (t < 1e-4 || t > maxDistance || u < 0 || u > 1) continue;
+        if (t < bestT) {
+            bestT = t;
+            bestPos = { x: origin.x + unitDir.x * t, y: origin.y + unitDir.y * t };
+        }
+    }
+
+    return bestPos ? { centerAtContact: bestPos, distance: bestT } : null;
+}
+
 function buildSimWorld(ballCount: number, dt: number): SimWorld {
     const world = new RAPIER.World({ x: 0, y: 0 });
     world.timestep = dt;
@@ -387,6 +510,7 @@ function buildSimWorld(ballCount: number, dt: number): SimWorld {
             .setLinearDamping(linearDamping)
             .setAngularDamping(0)
             .lockRotations()
+            .setCcdEnabled(true)
             .setCanSleep(true);
         const body = world.createRigidBody(rbDesc);
         body.enableCcd(true);

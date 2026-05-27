@@ -24,9 +24,9 @@ import {
     getCushionLineDefinitions, 
     stepLiveSimulation, 
     lerp,
-    type LiveSimulation, 
-    rayCastCircle 
+    type LiveSimulation
 } from '../pool-physics';
+import { castCueBallGuide, findFirstWallHitForBall } from '../pool-physics';
 import { Quaternion } from 'three';
 
 const ball1TextureUrl = 'assets/balls/ball.pool1.webp';
@@ -917,39 +917,66 @@ export class GameWorld {
         if (!this.isNextPlayer || this.isBallInHand || this.isBallsMoving || !this._stick.visible) {
             return;
         }
+        if (!this._liveSimulation) {
+            return;
+        }
 
         const renderOffset = new Vector2(0, GameConfig.physicsWorldYOffset);
         const origin = this._cueBall.position;
         const renderOrigin = origin.add(renderOffset);
-        const direction = new Vector2(Math.cos(this._stick.rotation), Math.sin(this._stick.rotation));
-        const wallHit = this.raycastWalls(origin, direction, 5000);
-        const ballHit = this.raycastObjectBalls(origin, direction, 5000);
+        const rawDir = new Vector2(Math.cos(this._stick.rotation), Math.sin(this._stick.rotation));
+        const dirLen = rawDir.length;
+        if (dirLen <= 1e-9) return;
+        const unitDir = rawDir.mult(1 / dirLen);
 
-        if (!wallHit && !ballHit) {
-            return;
-        }
+        // --- Primary guide: physics shape-cast of the cue ball through the live world ---
+        // castCueBallGuide uses Rapier's castShape with a Ball shape, so:
+        //   • centerAtContact is already offset from walls by ball radius (ghost ball won't penetrate cushions)
+        //   • ball collision uses the same Rapier geometry as the real physics, not idealised ray math
+        const firstHit = castCueBallGuide(
+            this._liveSimulation,
+            { x: origin.x, y: origin.y },
+            { x: unitDir.x, y: unitDir.y },
+            5000,
+            0, // exclude cue ball body
+        );
 
-        if (ballHit && (!wallHit || ballHit.distance < wallHit.distance)) {
-            const ballHitPoint = ballHit.point;
-            Canvas2D.drawLine(renderOrigin, ballHitPoint.add(renderOffset), '#ffffff', 2);
-            Canvas2D.drawCircle(ballHitPoint.add(renderOffset), (ballConfig.diameter / 2), '#ffffff', false, 2);
+        if (!firstHit) return;
 
-            const struckBall = ballHit.ball;
-            const struckBallCenter = struckBall?.position ?? ballHitPoint;
-            const struckDirRaw = struckBallCenter.subtract(ballHitPoint);
-            if (struckDirRaw.length > 0) {
-                const struckDirection = struckDirRaw.mult(1 / struckDirRaw.length);
-                const struckWallHit = this.raycastWalls(struckBallCenter, struckDirection, 5000);
-                const struckEnd = struckWallHit ? struckWallHit.point : struckBallCenter.add(struckDirection.mult(250));
-                Canvas2D.drawLine(struckBallCenter.add(renderOffset), struckEnd.add(renderOffset), '#ffffff', 2);
+        const contactPos = new Vector2(firstHit.centerAtContact.x, firstHit.centerAtContact.y);
+
+        // Draw aim line from cue ball to ghost ball contact point
+        Canvas2D.drawLine(renderOrigin, contactPos.add(renderOffset), '#ffffff', 2);
+        // Draw ghost ball at contact centre (correctly offset from wall/ball by radius)
+        Canvas2D.drawCircle(contactPos.add(renderOffset), ballConfig.diameter / 2, '#ffffff', false, 2);
+
+        if (!firstHit.isWall && firstHit.ballIndex != null && firstHit.ballIndex > 0) {
+            // --- Secondary guide: cut-angle continuation from the struck ball ---
+            const struckBall = this._balls[firstHit.ballIndex];
+            if (struckBall?.visible) {
+                const struckCenter = struckBall.position;
+                // Cut direction: from ghost-ball contact point toward struck ball centre
+                const cutDirRaw = struckCenter.subtract(contactPos);
+                const cutLen = cutDirRaw.length;
+                if (cutLen > 0) {
+                    const cutUnitDir = cutDirRaw.mult(1 / cutLen);
+                    // Analytic wall cast with ball-radius offset for the continuation line
+                    const wallHit = findFirstWallHitForBall(
+                        { x: struckCenter.x, y: struckCenter.y },
+                        { x: cutUnitDir.x, y: cutUnitDir.y },
+                        5000,
+                    );
+                    const cutEnd = wallHit
+                        ? new Vector2(wallHit.centerAtContact.x, wallHit.centerAtContact.y)
+                        : struckCenter.add(cutUnitDir.mult(250));
+                    Canvas2D.drawLine(
+                        struckCenter.add(renderOffset),
+                        cutEnd.add(renderOffset),
+                        '#ffffff',
+                        2,
+                    );
+                }
             }
-            return;
-        }
-
-        if (wallHit) {
-            const wallHitPoint = wallHit.point;
-            Canvas2D.drawLine(renderOrigin, wallHitPoint.add(renderOffset), '#ffffff', 2);
-            Canvas2D.drawCircle(wallHitPoint.add(renderOffset), (ballConfig.diameter / 2), '#ffffff', false, 2);
         }
     }
 
@@ -974,49 +1001,47 @@ export class GameWorld {
     }
 
     private raycastObjectBalls(origin: Vector2, direction: Vector2, maxDistance: number): { point: Vector2; distance: number; ball: Ball | null } | null {
-        if (!this._liveSimulation) {
-            return null;
-        }
-
         const dirLen = direction.length;
         if (dirLen <= 1e-9) {
             return null;
         }
 
         const unitDir = direction.mult(1 / dirLen);
-        const cueBody = this._liveSimulation.bodyMap[0]?.body;
-        const castHit = rayCastCircle(
-            this._liveSimulation.world,
-            { x: origin.x, y: origin.y },
-            { x: unitDir.x, y: unitDir.y },
-            maxDistance,
-            ballConfig.diameter / 2,
-            cueBody,
-        );
+        const collisionDistance = ballConfig.diameter; // center-to-center distance at first contact
+        let bestHit: { point: Vector2; distance: number; ball: Ball | null } | null = null;
 
-        if (!castHit) {
-            return null;
+        for (const ball of this._balls) {
+            if (!ball.visible || ball.ballNumber === 0) {
+                continue;
+            }
+
+            const center = ball.position;
+            const toCenter = origin.subtract(center);
+            const a = unitDir.dot(unitDir);
+            const b = 2 * toCenter.dot(unitDir);
+            const c = toCenter.dot(toCenter) - collisionDistance * collisionDistance;
+            const discriminant = b * b - 4 * a * c;
+
+            if (discriminant < 0) {
+                continue;
+            }
+
+            const t = (-b - Math.sqrt(discriminant)) / (2 * a);
+            if (!Number.isFinite(t) || t <= 0 || t > maxDistance) {
+                continue;
+            }
+
+            const hitPoint = origin.add(unitDir.mult(t));
+            if (!bestHit || t < bestHit.distance) {
+                bestHit = {
+                    point: hitPoint,
+                    distance: t,
+                    ball,
+                };
+            }
         }
 
-        let distance = castHit.timeOfImpact;
-        if (distance >= 0 && distance <= 1.000001) {
-            distance *= maxDistance;
-        }
-
-        if (!Number.isFinite(distance) || distance < 0 || distance > maxDistance) {
-            return null;
-        }
-
-        const hitPoint = origin.add(unitDir.mult(distance));
-        const struckBall = castHit.colliderHandle == null
-            ? null
-            : (this._balls.find((ball) => ball.dynBody?.collider.handle === castHit.colliderHandle) ?? null);
-
-        return {
-            point: hitPoint,
-            distance,
-            ball: struckBall,
-        };
+        return bestHit;
     }
 
     private raySegmentIntersection(

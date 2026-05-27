@@ -163,7 +163,7 @@ export class Ball {
 
     private updateSpin(): void {
         const nowMs = performance.now();
-        const deltaSeconds = Math.max(0, Math.min(0.05, (nowMs - this._lastSpinUpdateMs) / 500));
+        const deltaSeconds = Math.max(0, Math.min(0.05, (nowMs - this._lastSpinUpdateMs) / 1000));
         this._lastSpinUpdateMs = nowMs;
 
         if (deltaSeconds <= 0) {
@@ -186,7 +186,7 @@ export class Ball {
         const rotationAxis = new THREE.Vector3(velocity.y / speed, velocity.x / speed, 0);
 
         // Rolling without slipping: angular speed = linear speed / radius.
-        const angle = (speed * deltaSeconds) / radius;
+        const angle = (speed * deltaSeconds * 3) / radius;
         const deltaQuaternion = new THREE.Quaternion();
         deltaQuaternion.setFromAxisAngle(rotationAxis, angle);
         this._rotationQuaternion.multiplyQuaternions(deltaQuaternion, this._rotationQuaternion);

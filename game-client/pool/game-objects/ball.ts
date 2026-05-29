@@ -44,6 +44,13 @@ export class Ball {
     private _prevPhysicsPos: { x: number; y: number } = { x: 0, y: 0 };
 
     private _isCueMove: boolean = false;
+    private _pocketAnimation: {
+        startMs: number;
+        durationMs: number;
+        from: Vector2;
+        to: Vector2;
+        finalScale: number;
+    } | null = null;
 
     //------Properties------//
 
@@ -91,6 +98,7 @@ export class Ball {
     }
 
     public get visible(): boolean {
+        if (this._pocketAnimation) return true;
         if (this._isCueMove) return true; // ball is always visible while being placed
         if (this._dynBody) {
             return this._dynBody.enabled;
@@ -186,7 +194,7 @@ export class Ball {
         const rotationAxis = new THREE.Vector3(velocity.y / speed, velocity.x / speed, 0);
 
         // Rolling without slipping: angular speed = linear speed / radius.
-        const angle = (speed * deltaSeconds * 3) / radius;
+        const angle = (speed * deltaSeconds) / radius;
         const deltaQuaternion = new THREE.Quaternion();
         deltaQuaternion.setFromAxisAngle(rotationAxis, angle);
         this._rotationQuaternion.multiplyQuaternions(deltaQuaternion, this._rotationQuaternion);
@@ -232,6 +240,7 @@ export class Ball {
     }
 
     public show(position: Vector2): void {
+        this._pocketAnimation = null;
         this._position = position;
         this._lastPosition = Vector2.copy(position);
         this._lastSpinUpdateMs = performance.now();
@@ -242,10 +251,6 @@ export class Ball {
 
         if (this._dynBody) {
             this._dynBody.enabled = true;
-            this._dynBody.body.setEnabled(true);
-            this._dynBody.collider.setEnabled(true);
-            this._dynBody.body.setTranslation({ x: position.x, y: position.y }, true);
-            this._dynBody.body.setLinvel({ x: 0, y: 0 }, true);
             this._dynBody.center.x = position.x;
             this._dynBody.center.y = position.y;
             // Sync the interpolation baseline so that lerp(prev, center, alpha) returns
@@ -261,6 +266,7 @@ export class Ball {
     }
 
     public cueMove(position: Vector2): void {
+        this._pocketAnimation = null;
         this._isCueMove = true;
         this._position = position;
         this._lastPosition = Vector2.copy(position);
@@ -282,6 +288,7 @@ export class Ball {
     }
 
     public hide(): void {
+        this._pocketAnimation = null;
         this._lastSpinUpdateMs = performance.now();
         this._velocity = Vector2.zero;
         this._moving = false;
@@ -291,9 +298,6 @@ export class Ball {
 
         if (this._dynBody) {
             this._dynBody.enabled = false;
-            this._dynBody.body.setLinvel({ x: 0, y: 0 }, true);
-            this._dynBody.body.setEnabled(false);
-            this._dynBody.collider.setEnabled(false);
             this._dynBody.center.x = 9999;
             this._dynBody.center.y = 9999;
             this._dynBody.velocity.x = 0;
@@ -331,11 +335,50 @@ export class Ball {
         }
     }
 
+    public startPocketAnimation(prePocketVelocity?: Vector2): void {
+        const start = this._lastRenderPosition.length > 0.001
+            ? Vector2.copy(this._lastRenderPosition)
+            : new Vector2(this._prevPhysicsPos.x, this._prevPhysicsPos.y);
+        const velocity = prePocketVelocity && prePocketVelocity.length > 1e-6
+            ? Vector2.copy(prePocketVelocity)
+            : Vector2.copy(this._previousVelocity);
+        const forward = velocity.length > 1e-6
+            ? velocity.mult(1 / velocity.length).mult(ballConfig.diameter * 0.65)
+            : Vector2.zero;
+        const centerBias = new Vector2(GameConfig.gameSize.x / 2, 375);
+        const sinkTarget = new Vector2(
+            lerp(start.x + forward.x, centerBias.x, 0.18),
+            lerp(start.y + forward.y, centerBias.y + ballConfig.diameter * 0.45, 0.18),
+        );
+        this._pocketAnimation = {
+            startMs: performance.now(),
+            durationMs: 420,
+            from: start,
+            to: sinkTarget,
+            finalScale: 0.12,
+        };
+        this._visible = true;
+        this._isCueMove = false;
+    }
+
     public draw(alpha: number = 1): void {
         if (!this.visible) return;
         let px: number;
         let py: number;
-        if (this._dynBody && !this._isCueMove) {
+        let radius = ballConfig.diameter / 2;
+        if (this._pocketAnimation) {
+            const elapsed = performance.now() - this._pocketAnimation.startMs;
+            const t = Math.max(0, Math.min(1, elapsed / this._pocketAnimation.durationMs));
+            const eased = 1 - Math.pow(1 - t, 3);
+            px = lerp(this._pocketAnimation.from.x, this._pocketAnimation.to.x, eased);
+            py = lerp(this._pocketAnimation.from.y, this._pocketAnimation.to.y, eased);
+            radius *= lerp(1, this._pocketAnimation.finalScale, eased);
+            if (t >= 1) {
+                this._pocketAnimation = null;
+                this._visible = false;
+                return;
+            }
+        } else if (this._dynBody && !this._isCueMove) {
             // Interpolate between the position at the start of the last physics step (prev)
             // and the position at the end of it (curr), using alpha = accumulator / fixedStepMs.
             // This keeps rendering smooth at any display refresh rate regardless of physics FPS.
@@ -356,7 +399,7 @@ export class Ball {
         Canvas2D.drawTexturedSphere(
             this._sphereTexture,
             new Vector2(px, py + GameConfig.physicsWorldYOffset),
-            ballConfig.diameter / 2,
+            radius,
             this._rotationQuaternion,
             Ball._shadowTexture || undefined,
             Ball._lightTexture || undefined,

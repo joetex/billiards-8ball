@@ -167,7 +167,7 @@ export const GameConfig: IGameConfig = {
         shotOrigin: { x: 950, y: 11 },
         powerToAddPerFrame: 2,
         movementPerFrame: 0.1,
-        maxPower: 800
+        maxPower: 1200
     },
 
     input: {

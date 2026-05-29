@@ -22,6 +22,8 @@ import {
     encodePowerToUint, 
     createLiveSimulation, 
     getCushionLineDefinitions, 
+    getShotSpeedFromPower,
+    predictGuideBallCollision,
     stepLiveSimulation, 
     lerp,
     type LiveSimulation
@@ -87,7 +89,7 @@ const gameSize: IVector2 = GameConfig.gameSize;
 const sprites: IAssetsConfig = GameConfig.sprites;
 const sounds: IAssetsConfig = GameConfig.sounds;
 const hudBarHeight = 56;  // Visual height of HUD bar at top of screen
-const showWallDebugOverlay = true;
+const showWallDebugOverlay = false;
 
 function toHashCoord(value: number): string {
     return Number.isFinite(value) ? (Math.round(value * 100) / 100).toFixed(2) : "0.00";
@@ -152,6 +154,7 @@ export class GameWorld {
     private _isFirstMessage: boolean = true; // Track if this is the first state message received (for iframe reload handling)
     private _lastStateUpdateMousePos: Vector2 | null = null; // Track mouse position at last state update to prevent aim on replay navigation
     private _mouseHasMovedSinceStateUpdate: boolean = false; // Track if mouse has moved since last state update
+    private _appliedRackSeed: number | null = null;
 
     // Break-placement state (first shot of each rack: cue ball can only move along Y axis)
     private _isBreakMode: boolean = false;
@@ -174,6 +177,33 @@ export class GameWorld {
                 this._bodyIdToBall.set(body.id, this._balls[i]);
             }
         }
+    }
+
+    private _getServerCuePlacement(): Vector2 | null {
+        const placement = this._serverGameState?.state?.cueBallPlacement;
+        if (placement && typeof placement.x === 'number' && typeof placement.y === 'number') {
+            return new Vector2(placement.x, placement.y);
+        }
+        return null;
+    }
+
+    private _getServerRackSeed(): number | null {
+        const rackSeedRaw = this._serverGameState?.state?.rackSeed;
+        const rackSeed = Number(rackSeedRaw);
+        return Number.isFinite(rackSeed) ? rackSeed : null;
+    }
+
+    private _ensureCueBallVisibleFromServer(): void {
+        if (!this._cueBall || this._shotSimulationInProgress) {
+            return;
+        }
+
+        const cueBallInHand = this._serverGameState?.state?.cueBallInHand === true;
+        if (!cueBallInHand || this._cueBall.visible) {
+            return;
+        }
+
+        this._cueBall.show(this._getServerCuePlacement() ?? Vector2.copy(GameConfig.cueBallPosition));
     }
 
     //------Properties------//
@@ -259,17 +289,25 @@ export class GameWorld {
         const events = game.events();
         const firstEvent = events.length > 0 ? events[0] : { type: 'none' };
         const eventPayload = (firstEvent as any)?.payload ?? (firstEvent as any)?.data ?? null;
+        const serverRackSeed = this._getServerRackSeed();
+
+        if (serverRackSeed !== null && this._appliedRackSeed !== null && serverRackSeed !== this._appliedRackSeed) {
+            this._isBreakMode = true;
+            this._cueMoveMouseDownSeen = false;
+            this.initMatch(true);
+        }
 
         switch (firstEvent.type) {
             case 'gamestart':
+            case 'newround':
                 this._isBreakMode = true;
                 this._cueMoveMouseDownSeen = false;
-                this.initMatch();
+                this.initMatch(true);
                 break;
             case 'newgame':
                 this._isBreakMode = true;
                 this._cueMoveMouseDownSeen = false;
-                this.initMatch();
+                this.initMatch(true);
                 break;
             case 'shoot': {
                 if (!this._stick.visible) {
@@ -324,6 +362,9 @@ export class GameWorld {
                 // Shot processed, foul — reset simulation and wait for cue placement
                 this._waitingForShotResult = false;
                 this._shotSimulationInProgress = false;
+                this._localCuePlacePending = false;
+                this._cueMoveMouseDownSeen = false;
+                this._ensureCueBallVisibleFromServer();
                 // Hide stick while the next player places the cue ball
                 this._stick.hide();
                 break;
@@ -349,19 +390,18 @@ export class GameWorld {
             this._shotSimulationInProgress = false;
             this._localCuePlacePending = false;
             this._cueMoveMouseDownSeen = false;
-            const placement = game.state('cueBallPlacement');
-            if (placement && typeof placement.x === 'number' && typeof placement.y === 'number') {
-                this._cueBall.show(new Vector2(placement.x, placement.y));
-            }
+            this._ensureCueBallVisibleFromServer();
             this._stick.hide();
         }
 
     }
 
 
-    public initMatch(): void {
+    public initMatch(useSeededRackLayout: boolean = false): void {
+        this._pocketedBallsThisTurn.clear();
         const rackSeedRaw = this._serverGameState?.state?.rackSeed;
         const rackSeed = Number.isFinite(Number(rackSeedRaw)) ? Number(rackSeedRaw) : 0;
+        this._appliedRackSeed = Number.isFinite(Number(rackSeedRaw)) ? Number(rackSeedRaw) : null;
         const serverBalls = this._serverGameState?.state?.balls;
         const templateBalls = createInitialBalls(rackSeed);
         const initialBalls = templateBalls.map((template) => ({ ...template }));
@@ -382,13 +422,25 @@ export class GameWorld {
                     id: typeof sb?.id === "number" ? sb.id : number,
                     number,
                     type: nextType,
-                    x: typeof sb?.x === "number" ? sb.x : base.x,
-                    y: typeof sb?.y === "number" ? sb.y : base.y,
+                    x: useSeededRackLayout && number !== 0 ? base.x : (typeof sb?.x === "number" ? sb.x : base.x),
+                    y: useSeededRackLayout && number !== 0 ? base.y : (typeof sb?.y === "number" ? sb.y : base.y),
                     vx: typeof sb?.vx === "number" ? sb.vx : 0,
                     vy: typeof sb?.vy === "number" ? sb.vy : 0,
-                    visible: sb?.visible !== false,
+                    visible: useSeededRackLayout && number !== 0 ? true : (sb?.visible !== false),
                 };
             }
+        }
+
+        if (useSeededRackLayout) {
+            const cuePlacement = this._getServerCuePlacement();
+            initialBalls[0] = {
+                ...initialBalls[0],
+                x: cuePlacement?.x ?? initialBalls[0].x,
+                y: cuePlacement?.y ?? initialBalls[0].y,
+                visible: true,
+                vx: 0,
+                vy: 0,
+            };
         }
 
         this._balls = initialBalls.map((ball) => {
@@ -425,11 +477,14 @@ export class GameWorld {
         this._liveSimulation = createLiveSimulation(initialBalls);
         this._linkBallsToLiveSimulationBodies();
 
+        this._ensureCueBallVisibleFromServer();
+
     }
 
     private _startSimulationWithShot(angleUint: number, powerUint: number): void {
         this._isBreakMode = false; // first shot clears break-placement mode
         this._rippleEffects = []; // clear any pending ripples when shot begins
+        this._pocketedBallsThisTurn.clear();
         const initialBalls = this._balls.map((ball, i) => {
             const number = ball.ballNumber;
             const simBall = this._liveSimulation?.balls?.[i];
@@ -488,13 +543,25 @@ export class GameWorld {
         const events = game.events();
         const firstEvent = events.length > 0 ? events[0] : { type: 'none' };
 
+        this._ensureCueBallVisibleFromServer();
+
 
         if (this._shotSimulationInProgress) {
+            const preStepVelocities = this._liveSimulation!.bodyMap.map((body) =>
+                body ? new Vector2(body.velocity.x, body.velocity.y) : Vector2.zero,
+            );
             this._balls.forEach((ball) => ball.snapshotPhysicsPosition());
             // Run one 60 Hz physics step per fixed game-loop update; rendering stays smooth
             // via alpha interpolation in Ball.draw().
             stepLiveSimulation(this._liveSimulation!, 0, 1);
             const sim = this._liveSimulation!;
+
+            for (const pocketedIndex of sim.pocketed) {
+                if (!this._pocketedBallsThisTurn.has(pocketedIndex)) {
+                    this._pocketedBallsThisTurn.add(pocketedIndex);
+                    this._balls[pocketedIndex]?.startPocketAnimation(preStepVelocities[pocketedIndex]);
+                }
+            }
 
             if (sim.settled && !this._waitingForShotResult) {
                 this._waitingForShotResult = true;
@@ -766,7 +833,6 @@ export class GameWorld {
         const barHeight = GameConfig.gameSize.y - barY; // 56px
         const barCenterY = barY + barHeight / 2;
         Canvas2D.drawRect(new Vector2(0, barY), new Vector2(GameConfig.gameSize.x, barHeight), 'rgba(8, 12, 10)', true);
-        Canvas2D.drawLine(new Vector2(0, barY), new Vector2(GameConfig.gameSize.x, barY), 'rgba(220, 230, 220)', 1);
         const leftName = this.getPlayerDisplayName(0);
         const rightName = this.getPlayerDisplayName(1);
         const leftBalls = this.getCollectedBallNumbersForPlayer(0);
@@ -951,30 +1017,46 @@ export class GameWorld {
         Canvas2D.drawCircle(contactPos.add(renderOffset), ballConfig.diameter / 2, '#ffffff', false, 2);
 
         if (!firstHit.isWall && firstHit.ballIndex != null && firstHit.ballIndex > 0) {
-            // --- Secondary guide: cut-angle continuation from the struck ball ---
+            // --- Secondary guide: post-collision object-ball path using the same impulse model ---
             const struckBall = this._balls[firstHit.ballIndex];
             if (struckBall?.visible) {
                 const struckCenter = struckBall.position;
-                // Cut direction: from ghost-ball contact point toward struck ball centre
-                const cutDirRaw = struckCenter.subtract(contactPos);
-                const cutLen = cutDirRaw.length;
-                if (cutLen > 0) {
-                    const cutUnitDir = cutDirRaw.mult(1 / cutLen);
-                    // Analytic wall cast with ball-radius offset for the continuation line
-                    const wallHit = findFirstWallHitForBall(
-                        { x: struckCenter.x, y: struckCenter.y },
-                        { x: cutUnitDir.x, y: cutUnitDir.y },
-                        5000,
-                    );
-                    const cutEnd = wallHit
-                        ? new Vector2(wallHit.centerAtContact.x, wallHit.centerAtContact.y)
-                        : struckCenter.add(cutUnitDir.mult(250));
-                    Canvas2D.drawLine(
-                        struckCenter.add(renderOffset),
-                        cutEnd.add(renderOffset),
-                        '#ffffff',
-                        2,
-                    );
+                const previewPower = this._stick.power > 0
+                    ? this._stick.power
+                    : GameConfig.stick.maxPower * 0.6;
+                const cueSpeed = getShotSpeedFromPower(previewPower);
+                const preview = predictGuideBallCollision(
+                    { x: contactPos.x, y: contactPos.y },
+                    { x: struckCenter.x, y: struckCenter.y },
+                    { x: unitDir.x, y: unitDir.y },
+                    cueSpeed,
+                );
+
+                if (preview && preview.objectAfter.speed > 1e-6) {
+                    const cutVel = new Vector2(preview.objectAfter.vx, preview.objectAfter.vy);
+                    const cutSpeed = cutVel.length;
+                    if (cutSpeed > 1e-9) {
+                        const cutUnitDir = cutVel.mult(1 / cutSpeed);
+                        // Sharp cuts naturally transfer less speed. Keep a small floor so the guide remains visible.
+                        const previewDistance = Math.max(
+                            ballConfig.diameter * 1.25,
+                            Math.min(5000, preview.objectAfter.speed * 0.45),
+                        );
+                        const wallHit = findFirstWallHitForBall(
+                            { x: struckCenter.x, y: struckCenter.y },
+                            { x: cutUnitDir.x, y: cutUnitDir.y },
+                            previewDistance,
+                        );
+                        const cutEnd = wallHit
+                            ? new Vector2(wallHit.centerAtContact.x, wallHit.centerAtContact.y)
+                            : struckCenter.add(cutUnitDir.mult(previewDistance));
+                        Canvas2D.drawLine(
+                            struckCenter.add(renderOffset),
+                            cutEnd.add(renderOffset),
+                            '#ffffff',
+                            2,
+                        );
+                    }
                 }
             }
         }
